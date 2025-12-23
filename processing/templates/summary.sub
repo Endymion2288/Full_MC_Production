@@ -1,0 +1,25 @@
+# ==============================================================================
+# summary.sub - HTCondor submit file for DAG summary job
+# ==============================================================================
+# This job runs at the end of the DAG to generate summary statistics.
+# ==============================================================================
+
+Universe = vanilla
+
+Executable = /bin/bash
+Arguments = -c "echo 'DAG completed at $(date)'; echo 'Campaign outputs stored in /eos/user/x/xcheng/MC_Production/output/'"
+
+Should_Transfer_Files = YES
+WhenToTransferOutput = ON_EXIT
+
+Output = log/summary_$(Cluster)_$(Process).stdout
+Error = log/summary_$(Cluster)_$(Process).stderr
+Log = log/summary_$(Cluster)_$(Process).log
+
+request_cpus = 1
+request_memory = 1GB
+request_disk = 1GB
+
++JobFlavour = "espresso"
+
+Queue 1

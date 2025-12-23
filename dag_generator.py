@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""
+DAG Generator for Full MC Production Pipeline
+==============================================
+
+This script generates HTCondor DAGMan workflow files for the complete MC production
+chain: LHE Generation -> Shower -> Mix -> GENSIM -> RAW -> RECO -> MiniAOD -> Ntuple
+
+Supports both JJP (J/psi + J/psi + phi) and JUP (J/psi + Upsilon + phi) physics processes.
+
+Usage:
+    python dag_generator.py --campaign JJP_DPS1 --jobs 100 --output my_production.dag
+    python dag_generator.py --campaign ALL --jobs 50 --output full_production.dag
+    python dag_generator.py --list-campaigns
+
+Author: MC Production Team
+Date: 2024
+"""
+
+import argparse
+import os
+import sys
+from datetime import datetime
+
+# Python 3.6 compatibility
+try:
+    from typing import Dict, List, Tuple, Optional
+except ImportError:
+    pass
+
+try:
+    from dataclasses import dataclass, field
+except ImportError:
+    # Fallback for Python < 3.7 - install dataclasses package or use simple classes
+    print("Note: dataclasses not available, using fallback implementation")
+    def dataclass(cls):
+        return cls
+    def field(**kwargs):
+        return kwargs.get('default', None)
+
+# =============================================================================
+# Configuration Constants
+# =============================================================================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EOS_BASE = "/eos/user/x/xcheng/MC_Production"
+CMSSW_12 = "/afs/cern.ch/user/x/xcheng/condor/CMSSW_12_4_14_patch3"
+CMSSW_14 = "/afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18"
+
+# Existing LHE pools on EOS
+EXISTING_LHE_POOLS = {
+    "pool_jpsi_g": "/eos/user/x/xcheng/learn_MC/ggJpsig_Jpsi_pt6_g_pt4",
+    "pool_gg": "/eos/user/x/xcheng/learn_MC/gggg_g_pt4",
+}
+
+# =============================================================================
+# Data Classes (Python 3.6 compatible)
+# =============================================================================
+
+class LHEPool:
+    """Definition of an LHE pool"""
+    def __init__(self, name, process, description, 
+                 output_pattern="sample_{name}_{seed}.lhe",
+                 min_pt_conia=6.0, min_pt_bonia=2.0, min_pt_q=4.0, 
+                 eos_path=None):
+        self.name = name
+        self.process = process
+        self.description = description
+        self.output_pattern = output_pattern
+        self.min_pt_conia = min_pt_conia
+        self.min_pt_bonia = min_pt_bonia
+        self.min_pt_q = min_pt_q
+        self.eos_path = eos_path
+
+class Campaign:
+    """Definition of a physics campaign"""
+    def __init__(self, name, analysis_type, inputs, modes, description):
+        self.name = name
+        self.analysis_type = analysis_type
+        self.inputs = inputs
+        self.modes = modes
+        self.description = description
+        self.n_sources = len(inputs)
+        if len(modes) != len(inputs):
+            raise ValueError("Campaign {}: modes count must match inputs count".format(name))
+
+# =============================================================================
+# LHE Pool Definitions
+# =============================================================================
+
+LHE_POOLS: Dict[str, LHEPool] = {
+    "pool_jpsi_g": LHEPool(
+        name="pool_jpsi_g",
+        process="g g > cc~(3S11) g",
+        description="gg -> J/psi + g (Color Singlet)",
+        min_pt_conia=6.0,
+        min_pt_q=4.0,
+        eos_path=EXISTING_LHE_POOLS.get("pool_jpsi_g")
+    ),
+    "pool_upsilon_g": LHEPool(
+        name="pool_upsilon_g", 
+        process="g g > bb~(3S11) g",
+        description="gg -> Upsilon(1S) + g (Color Singlet)",
+        min_pt_bonia=2.0,
+        min_pt_q=4.0
+    ),
+    "pool_gg": LHEPool(
+        name="pool_gg",
+        process="g g > g g",
+        description="gg -> gg (QCD dijet)",
+        min_pt_q=4.0,
+        eos_path=EXISTING_LHE_POOLS.get("pool_gg")
+    ),
+    "pool_2jpsi_g": LHEPool(
+        name="pool_2jpsi_g",
+        process="g g > cc~(3S11) cc~(3S11) g",
+        description="gg -> 2J/psi + g (SPS for JJP)",
+        min_pt_conia=6.0,
+        min_pt_q=4.0
+    ),
+    "pool_jpsi_upsilon_g": LHEPool(
+        name="pool_jpsi_upsilon_g",
+        process="g g > cc~(3S11) bb~(3S11) g", 
+        description="gg -> J/psi + Upsilon + g (SPS for JUP)",
+        min_pt_conia=6.0,
+        min_pt_bonia=2.0,
+        min_pt_q=4.0
+    ),
+}
+
+# =============================================================================
+# Campaign Definitions
+# =============================================================================
+
+CAMPAIGNS: Dict[str, Campaign] = {
+    # JJP Campaigns
+    "JJP_SPS": Campaign(
+        name="JJP_SPS",
+        analysis_type="JJP",
+        inputs=["pool_2jpsi_g"],
+        modes=["phi"],
+        description="JJP SPS: gg->2J/psi+g with forced Phi shower"
+    ),
+    "JJP_DPS1": Campaign(
+        name="JJP_DPS1",
+        analysis_type="JJP",
+        inputs=["pool_jpsi_g", "pool_jpsi_g"],
+        modes=["normal", "phi"],
+        description="JJP DPS Type-1: Two J/psi+g events mixed"
+    ),
+    "JJP_DPS2": Campaign(
+        name="JJP_DPS2",
+        analysis_type="JJP",
+        inputs=["pool_2jpsi_g", "pool_gg"],
+        modes=["normal", "phi"],
+        description="JJP DPS Type-2: 2J/psi+g mixed with gg->gg"
+    ),
+    "JJP_TPS": Campaign(
+        name="JJP_TPS",
+        analysis_type="JJP",
+        inputs=["pool_jpsi_g", "pool_jpsi_g", "pool_gg"],
+        modes=["normal", "normal", "phi"],
+        description="JJP TPS: Three parton scattering"
+    ),
+    
+    # JUP Campaigns
+    "JUP_SPS": Campaign(
+        name="JUP_SPS",
+        analysis_type="JUP",
+        inputs=["pool_jpsi_upsilon_g"],
+        modes=["phi"],
+        description="JUP SPS: gg->J/psi+Upsilon+g with forced Phi shower"
+    ),
+    "JUP_DPS1": Campaign(
+        name="JUP_DPS1",
+        analysis_type="JUP",
+        inputs=["pool_jpsi_g", "pool_upsilon_g"],
+        modes=["phi", "normal"],
+        description="JUP DPS Type-1: J/psi(phi) + Upsilon(normal)"
+    ),
+    "JUP_DPS2": Campaign(
+        name="JUP_DPS2",
+        analysis_type="JUP",
+        inputs=["pool_jpsi_g", "pool_upsilon_g"],
+        modes=["normal", "phi"],
+        description="JUP DPS Type-2: J/psi(normal) + Upsilon(phi)"
+    ),
+    "JUP_DPS3": Campaign(
+        name="JUP_DPS3",
+        analysis_type="JUP",
+        inputs=["pool_jpsi_upsilon_g", "pool_gg"],
+        modes=["normal", "phi"],
+        description="JUP DPS Type-3: J/psi+Upsilon+g mixed with gg->gg"
+    ),
+    "JUP_TPS": Campaign(
+        name="JUP_TPS",
+        analysis_type="JUP",
+        inputs=["pool_jpsi_g", "pool_upsilon_g", "pool_gg"],
+        modes=["normal", "normal", "phi"],
+        description="JUP TPS: Three parton scattering"
+    ),
+}
+
+# =============================================================================
+# DAG Generator Class
+# =============================================================================
+
+class DAGGenerator:
+    """Generate HTCondor DAGMan files for MC production"""
+    
+    def __init__(self, output_dir: str, eos_output: str = EOS_BASE):
+        self.output_dir = output_dir
+        self.eos_output = eos_output
+        self.dag_lines: List[str] = []
+        self.sub_files: Dict[str, str] = {}
+        self.job_counter = 0
+        
+    def generate_seed_list(self, n_jobs: int, start_seed: int = 100) -> List[int]:
+        """Generate list of random seeds for jobs"""
+        return list(range(start_seed, start_seed + n_jobs))
+    
+    def add_lhe_generation_jobs(self, pool: LHEPool, n_jobs: int, 
+                                 seeds: Optional[List[int]] = None) -> List[str]:
+        """Add LHE generation jobs to DAG"""
+        job_names = []
+        
+        if pool.eos_path:
+            print(f"  [INFO] Pool {pool.name} already exists at {pool.eos_path}, skipping LHE generation")
+            return job_names
+            
+        if seeds is None:
+            seeds = self.generate_seed_list(n_jobs)
+            
+        for i, seed in enumerate(seeds):
+            job_name = f"LHE_{pool.name}_{i}"
+            job_names.append(job_name)
+            
+            # Add to DAG
+            self.dag_lines.append(f"JOB {job_name} processing/templates/lhe_gen.sub")
+            self.dag_lines.append(f'VARS {job_name} pool="{pool.name}" seed="{seed}" '
+                                  f'process="{pool.process}" '
+                                  f'min_pt_conia="{pool.min_pt_conia}" '
+                                  f'min_pt_bonia="{pool.min_pt_bonia}" '
+                                  f'min_pt_q="{pool.min_pt_q}"')
+            self.dag_lines.append(f"RETRY {job_name} 3")
+            
+        return job_names
+    
+    def add_processing_job(self, campaign: Campaign, job_id: int,
+                           lhe_files: List[str], parent_jobs: List[str]) -> str:
+        """Add a processing job (shower -> mix -> sim -> ntuple) to DAG"""
+        job_name = f"PROC_{campaign.name}_{job_id}"
+        
+        # Build input arguments
+        inputs_str = ",".join(lhe_files)
+        modes_str = ",".join(campaign.modes)
+        
+        # Add to DAG
+        self.dag_lines.append(f"JOB {job_name} processing/templates/processing.sub")
+        self.dag_lines.append(
+            f'VARS {job_name} campaign="{campaign.name}" '
+            f'job_id="{job_id}" '
+            f'inputs="{inputs_str}" '
+            f'modes="{modes_str}" '
+            f'analysis="{campaign.analysis_type}" '
+            f'n_sources="{campaign.n_sources}"'
+        )
+        self.dag_lines.append(f"RETRY {job_name} 2")
+        
+        # Add dependencies
+        if parent_jobs:
+            parents = " ".join(parent_jobs)
+            self.dag_lines.append(f"PARENT {parents} CHILD {job_name}")
+            
+        return job_name
+    
+    def generate_campaign_dag(self, campaign: Campaign, n_jobs: int,
+                               use_existing_lhe: bool = True) -> List[str]:
+        """Generate DAG nodes for a complete campaign"""
+        self.dag_lines.append(f"\n# ============================================")
+        self.dag_lines.append(f"# Campaign: {campaign.name}")
+        self.dag_lines.append(f"# Description: {campaign.description}")
+        self.dag_lines.append(f"# ============================================")
+        
+        processing_jobs = []
+        
+        # Collect unique pools needed
+        unique_pools = list(set(campaign.inputs))
+        pool_lhe_jobs: Dict[str, List[str]] = {}
+        
+        # Stage 1: Generate LHE pools if needed
+        for pool_name in unique_pools:
+            pool = LHE_POOLS[pool_name]
+            
+            # Count how many times this pool is used
+            usage_count = campaign.inputs.count(pool_name)
+            jobs_per_pool = n_jobs * usage_count
+            
+            if use_existing_lhe and pool.eos_path:
+                pool_lhe_jobs[pool_name] = []  # No jobs needed
+            else:
+                lhe_jobs = self.add_lhe_generation_jobs(pool, jobs_per_pool)
+                pool_lhe_jobs[pool_name] = lhe_jobs
+                
+        # Stage 2: Generate processing jobs
+        for job_id in range(n_jobs):
+            # Determine LHE file sources for this job
+            lhe_files = []
+            parent_jobs = []
+            
+            pool_usage_counter = {p: 0 for p in unique_pools}
+            
+            for i, pool_name in enumerate(campaign.inputs):
+                pool = LHE_POOLS[pool_name]
+                usage_idx = pool_usage_counter[pool_name]
+                pool_usage_counter[pool_name] += 1
+                
+                if pool.eos_path:
+                    # Use existing LHE from EOS (will be resolved at runtime)
+                    lhe_files.append(f"EOS:{pool_name}:{job_id}:{usage_idx}")
+                else:
+                    # Reference generated LHE
+                    lhe_job_idx = job_id * campaign.inputs.count(pool_name) + usage_idx
+                    lhe_job_name = pool_lhe_jobs[pool_name][lhe_job_idx]
+                    lhe_files.append(f"GEN:{pool_name}:{lhe_job_idx}")
+                    parent_jobs.append(lhe_job_name)
+                    
+            proc_job = self.add_processing_job(campaign, job_id, lhe_files, parent_jobs)
+            processing_jobs.append(proc_job)
+            
+        return processing_jobs
+    
+    def generate_full_dag(self, campaigns: List[str], n_jobs: int) -> str:
+        """Generate complete DAG file content"""
+        self.dag_lines = []
+        
+        # Header
+        self.dag_lines.append("# " + "=" * 70)
+        self.dag_lines.append("# Full MC Production DAG")
+        self.dag_lines.append(f"# Generated: {datetime.now().isoformat()}")
+        self.dag_lines.append(f"# Campaigns: {', '.join(campaigns)}")
+        self.dag_lines.append(f"# Jobs per campaign: {n_jobs}")
+        self.dag_lines.append("# " + "=" * 70)
+        self.dag_lines.append("")
+        
+        # DAG configuration
+        self.dag_lines.append("# DAG Configuration")
+        self.dag_lines.append("CONFIG dagman.config")
+        self.dag_lines.append("")
+        
+        # Generate each campaign
+        all_jobs = []
+        for campaign_name in campaigns:
+            if campaign_name not in CAMPAIGNS:
+                print(f"[WARNING] Unknown campaign: {campaign_name}, skipping")
+                continue
+            campaign = CAMPAIGNS[campaign_name]
+            jobs = self.generate_campaign_dag(campaign, n_jobs)
+            all_jobs.extend(jobs)
+            
+        # Final summary node
+        if all_jobs:
+            self.dag_lines.append("\n# ============================================")
+            self.dag_lines.append("# Final Summary Node")
+            self.dag_lines.append("# ============================================")
+            self.dag_lines.append("FINAL SUMMARY processing/templates/summary.sub")
+            
+        return "\n".join(self.dag_lines)
+    
+    def generate_dagman_config(self) -> str:
+        """Generate DAGMan configuration file"""
+        return """# DAGMan Configuration
+# ====================
+
+# Maximum number of jobs to submit at once
+DAGMAN_MAX_JOBS_SUBMITTED = 500
+
+# Maximum number of jobs in idle state
+DAGMAN_MAX_JOBS_IDLE = 200
+
+# Retry failed jobs
+DAGMAN_MAX_SUBMITS_PER_INTERVAL = 50
+DAGMAN_SUBMIT_DELAY = 1
+
+# Log settings
+DAGMAN_SUPPRESS_NOTIFICATION = True
+
+# Allow rescue DAG creation
+DAGMAN_GENERATE_RESCUE_DAG = True
+"""
+
+    def write_dag(self, dag_content: str, filename: str):
+        """Write DAG file and associated configuration"""
+        dag_path = os.path.join(self.output_dir, filename)
+        
+        # Write DAG file
+        with open(dag_path, 'w') as f:
+            f.write(dag_content)
+        print(f"[OK] Generated DAG file: {dag_path}")
+        
+        # Write DAGMan config
+        config_path = os.path.join(self.output_dir, "dagman.config")
+        with open(config_path, 'w') as f:
+            f.write(self.generate_dagman_config())
+        print(f"[OK] Generated DAGMan config: {config_path}")
+
+# =============================================================================
+# CLI Interface
+# =============================================================================
+
+def list_campaigns():
+    """Print available campaigns"""
+    print("\n" + "=" * 70)
+    print("Available Campaigns")
+    print("=" * 70)
+    
+    for category in ["JJP", "JUP"]:
+        print(f"\n{category} Campaigns:")
+        print("-" * 40)
+        for name, campaign in CAMPAIGNS.items():
+            if campaign.analysis_type == category:
+                inputs = " + ".join(campaign.inputs)
+                modes = "/".join(campaign.modes)
+                print(f"  {name:15} : {campaign.description}")
+                print(f"                   Inputs: {inputs}")
+                print(f"                   Modes:  {modes}")
+                print()
+                
+def list_pools():
+    """Print available LHE pools"""
+    print("\n" + "=" * 70)
+    print("Available LHE Pools")
+    print("=" * 70)
+    
+    for name, pool in LHE_POOLS.items():
+        status = "[EXISTS]" if pool.eos_path else "[GENERATE]"
+        print(f"\n{name} {status}")
+        print(f"  Process:     {pool.process}")
+        print(f"  Description: {pool.description}")
+        if pool.eos_path:
+            print(f"  EOS Path:    {pool.eos_path}")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate HTCondor DAGMan workflow for MC production",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # List available campaigns
+  python dag_generator.py --list-campaigns
+  
+  # Generate DAG for a single campaign
+  python dag_generator.py --campaign JJP_DPS1 --jobs 100 --output jjp_dps1.dag
+  
+  # Generate DAG for all JJP campaigns
+  python dag_generator.py --campaign JJP_ALL --jobs 50 --output jjp_all.dag
+  
+  # Generate DAG for all campaigns
+  python dag_generator.py --campaign ALL --jobs 20 --output full_mc.dag
+        """
+    )
+    
+    parser.add_argument("--campaign", "-c", type=str,
+                        help="Campaign name (or ALL, JJP_ALL, JUP_ALL)")
+    parser.add_argument("--jobs", "-n", type=int, default=100,
+                        help="Number of jobs per campaign (default: 100)")
+    parser.add_argument("--output", "-o", type=str, default="mc_production.dag",
+                        help="Output DAG filename (default: mc_production.dag)")
+    parser.add_argument("--output-dir", type=str, default=BASE_DIR,
+                        help="Output directory (default: current script directory)")
+    parser.add_argument("--list-campaigns", action="store_true",
+                        help="List available campaigns")
+    parser.add_argument("--list-pools", action="store_true",
+                        help="List available LHE pools")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print DAG content without writing files")
+    
+    args = parser.parse_args()
+    
+    if args.list_campaigns:
+        list_campaigns()
+        return
+        
+    if args.list_pools:
+        list_pools()
+        return
+        
+    if not args.campaign:
+        parser.print_help()
+        return
+        
+    # Determine campaigns to generate
+    if args.campaign == "ALL":
+        campaigns = list(CAMPAIGNS.keys())
+    elif args.campaign == "JJP_ALL":
+        campaigns = [c for c in CAMPAIGNS.keys() if c.startswith("JJP")]
+    elif args.campaign == "JUP_ALL":
+        campaigns = [c for c in CAMPAIGNS.keys() if c.startswith("JUP")]
+    elif args.campaign in CAMPAIGNS:
+        campaigns = [args.campaign]
+    else:
+        print(f"[ERROR] Unknown campaign: {args.campaign}")
+        print("Use --list-campaigns to see available options")
+        sys.exit(1)
+        
+    print(f"\n[INFO] Generating DAG for campaigns: {', '.join(campaigns)}")
+    print(f"[INFO] Jobs per campaign: {args.jobs}")
+    print(f"[INFO] Output file: {args.output}")
+    
+    # Generate DAG
+    generator = DAGGenerator(args.output_dir)
+    dag_content = generator.generate_full_dag(campaigns, args.jobs)
+    
+    if args.dry_run:
+        print("\n" + "=" * 70)
+        print("DAG Content (dry run):")
+        print("=" * 70)
+        print(dag_content)
+    else:
+        generator.write_dag(dag_content, args.output)
+        print(f"\n[OK] DAG generation complete!")
+        print(f"[INFO] To submit: condor_submit_dag {os.path.join(args.output_dir, args.output)}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,64 @@
+# ==============================================================================
+# processing.sub - HTCondor submit file for MC processing chain
+# ==============================================================================
+# This template is used by dag_generator.py to submit processing jobs.
+# Runs the full chain: Shower -> Mix -> GEN-SIM -> RAW -> RECO -> MiniAOD -> Ntuple
+#
+# Required variables (set via DAGMan VARS):
+#   campaign   - Campaign name (e.g., JJP_DPS1)
+#   job_id     - Job identifier
+#   inputs     - Comma-separated pool:index pairs
+#   modes      - Comma-separated shower modes (normal|phi)
+#   analysis   - Analysis type (JJP or JUP)
+#   n_sources  - Number of input sources
+# ==============================================================================
+
+Universe = vanilla
+
+# Executable and arguments
+Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh
+Arguments = --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id)
+
+# Input files to transfer
+# The chain script will access files via AFS/EOS directly
+Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh
+
+# Output handling
+Should_Transfer_Files = YES
+WhenToTransferOutput = ON_EXIT
+
+# Log files
+Output = log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error = log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log = log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
+
+# Resource requirements
+# Full chain is very resource intensive
+request_cpus = 8
+request_memory = 20GB
+request_disk = 50GB
+
+# Job flavor (CERN batch system)
+# "nextweek" = up to 1 week (needed for full chain)
++JobFlavour = "nextweek"
+
+# Run in CMSSW-compatible container
++SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
+
+# Environment setup
+Environment = "HOME=/afs/cern.ch/user/x/xcheng X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u$(uid)"
+
+# Retry configuration
+MaxRetries = 2
+OnExitHold = (ExitCode != 0)
+OnExitHoldReason = "Job exited with non-zero status"
+OnExitHoldSubCode = 1
+
+# Periodic release of held jobs
+PeriodicRelease = (JobRunCount < 2) && (HoldReasonCode == 3)
+
+# Requirements - prefer nodes with good connectivity
+Requirements = (TARGET.OpSysAndVer =?= "AlmaLinux8" || TARGET.OpSysAndVer =?= "CentOS8")
+
+# Queue single job
+Queue 1

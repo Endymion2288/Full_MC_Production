@@ -1,0 +1,12 @@
+log/
+output/
+processing/pythia_shower/event_mixer_multisource
+processing/pythia_shower/shower_normal
+processing/pythia_shower/shower_phi
+*.tar.gz
+*.root
+*.lhe
+*.txt
+*.log
+*.out
+*.err
