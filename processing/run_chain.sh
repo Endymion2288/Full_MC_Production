@@ -32,10 +32,20 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMMON_DIR="${BASE_DIR}/common"
 SHOWER_DIR="${SCRIPT_DIR}/pythia_shower"
 CMSSW_CONFIGS_DIR="${COMMON_DIR}/cmssw_configs"
+PACKAGES_DIR="${COMMON_DIR}/packages"
+
+# Fallback when run from a transferred sandbox (run_chain.sh + sibling folders)
+if [[ ! -d "${COMMON_DIR}" && -d "${SCRIPT_DIR}/common" ]]; then
+    BASE_DIR="${SCRIPT_DIR}"
+    COMMON_DIR="${BASE_DIR}/common"
+    SHOWER_DIR="${BASE_DIR}/pythia_shower"
+    CMSSW_CONFIGS_DIR="${COMMON_DIR}/cmssw_configs"
+    PACKAGES_DIR="${COMMON_DIR}/packages"
+fi
 
 # CMSSW paths
-CMSSW_12_BASE="/afs/cern.ch/user/x/xcheng/condor/CMSSW_12_4_14_patch3"
-CMSSW_14_BASE="/afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18"
+CMSSW_12_BASE="${CMSSW_12_BASE:-/afs/cern.ch/user/x/xcheng/condor/CMSSW_12_4_14_patch3}"
+CMSSW_14_BASE="${CMSSW_14_BASE:-/afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18}"
 
 # EOS paths
 EOS_BASE="/eos/user/x/xcheng/MC_Production"
@@ -54,6 +64,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+
+if [[ ! -d "${COMMON_DIR}" ]]; then
+    echo "[ERROR] Common directory not found at ${COMMON_DIR}. Ensure common/ is transferred alongside run_chain.sh."
+    exit 1
+fi
 
 # ==============================================================================
 # Utility Functions
@@ -94,6 +109,8 @@ get_lhe_file() {
 setup_cmssw12() {
     msg_info "Setting up CMSSW_12_4_14_patch3..."
     source /cvmfs/cms.cern.ch/cmsset_default.sh
+    # Force el8 architecture for CMSSW_12
+    export SCRAM_ARCH=el8_amd64_gcc10
     cd "${CMSSW_12_BASE}/src"
     eval $(scramv1 runtime -sh)
     cd - > /dev/null
@@ -102,31 +119,95 @@ setup_cmssw12() {
 
 setup_cmssw14() {
     msg_info "Setting up CMSSW_14_0_18..."
+
+    if [[ ! -d "${CMSSW_14_BASE}/src" ]]; then
+        msg_error "CMSSW_14_0_18 not found at ${CMSSW_14_BASE}; ensure packages are unpacked and built"
+        return 1
+    fi
+
+    # Note: CMSSW_14 is built in el9 container, setup happens in container too
     source /cvmfs/cms.cern.ch/cmsset_default.sh
+    # Force el9 architecture for CMSSW_14
+    export SCRAM_ARCH=el9_amd64_gcc12
     cd "${CMSSW_14_BASE}/src"
     eval $(scramv1 runtime -sh)
     cd - > /dev/null
     msg_ok "CMSSW environment: ${CMSSW_VERSION}"
 }
 
+# EL9 container path for CMSSW_14
+EL9_CONTAINER="/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
+
+# Run command inside el9 container using apptainer
+run_in_el9_container() {
+    local script_content="$1"
+    local tmp_script=$(mktemp --suffix=_el9_cmd.sh)
+    
+    cat > "${tmp_script}" << 'SCRIPT_HEADER'
+#!/bin/bash
+set -e
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+export SCRAM_ARCH=el9_amd64_gcc12
+SCRIPT_HEADER
+    
+    echo "${script_content}" >> "${tmp_script}"
+    chmod +x "${tmp_script}"
+    
+    # Run in el9 container with necessary bind mounts
+    apptainer exec \
+        --bind /cvmfs:/cvmfs \
+        --bind /afs:/afs \
+        --bind /eos:/eos \
+        --bind /tmp:/tmp \
+        --bind "${WORKDIR}:${WORKDIR}" \
+        "${EL9_CONTAINER}" \
+        /bin/bash "${tmp_script}"
+    
+    local rc=$?
+    rm -f "${tmp_script}"
+    return ${rc}
+}
+
 run_cmsrun_cmssw14() {
     local cfg="$1"
     shift
-
-    # If libcrypt.so.2 is missing on el8 host, prefer the cmssw-el9 wrapper
-    if ldconfig -p 2>/dev/null | grep -q "libcrypt.so.2"; then
-        cmsRun "${cfg}" "$@"
-        return $?
-    fi
-
-    if command -v cmssw-el9 >/dev/null 2>&1; then
-        msg_info "Running cmsRun via cmssw-el9 container (libcrypt.so.2 not on host)"
-        cmssw-el9 -- /bin/bash -lc "source /cvmfs/cms.cern.ch/cmsset_default.sh; cd '${CMSSW_14_BASE}/src'; eval \$(scramv1 runtime -sh); cmsRun '${cfg}' $*"
-        return $?
-    fi
-
-    msg_error "libcrypt.so.2 missing and cmssw-el9 not found; install compat-libxcrypt or run on el9 host"
-    return 1
+    
+    msg_info "Running cmsRun in el9 container for CMSSW_14..."
+    
+    local script_content="
+cd \"${CMSSW_14_BASE}/src\"
+eval \$(scramv1 runtime -sh)
+cmsRun \"${cfg}\" \"\$@\"
+"
+    
+    # Build the full command with arguments
+    local tmp_script=$(mktemp --suffix=_cmsrun.sh)
+    cat > "${tmp_script}" << SCRIPT_EOF
+#!/bin/bash
+set -e
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+export SCRAM_ARCH=el9_amd64_gcc12
+cd "${CMSSW_14_BASE}/src"
+eval \$(scramv1 runtime -sh)
+cmsRun "${cfg}" $@
+SCRIPT_EOF
+    
+    chmod +x "${tmp_script}"
+    
+    apptainer exec \
+        --bind /cvmfs:/cvmfs \
+        --bind /afs:/afs \
+        --bind /eos:/eos \
+        --bind /tmp:/tmp \
+        --bind "${WORKDIR}:${WORKDIR}" \
+        --env "X509_USER_PROXY=${X509_USER_PROXY:-}" \
+        --env "HOME=${HOME}" \
+        "${EL9_CONTAINER}" \
+        /bin/bash "${tmp_script}"
+    
+    local rc=$?
+    rm -f "${tmp_script}"
+    return ${rc}
 }
 
 ensure_voms_proxy() {
@@ -151,6 +232,97 @@ ensure_voms_proxy() {
     fi
 
     msg_warn "No valid VOMS proxy detected. If DIGI premix download fails, run: voms-proxy-init -voms cms -valid 192:00"
+}
+
+prepare_cmssw14_from_package() {
+    local analysis="$1"
+    local pkg=""
+
+    case "${analysis}" in
+        "JJP") pkg="${PACKAGES_DIR}/jjp_code.tar.gz" ;;
+        "JUP") pkg="${PACKAGES_DIR}/jup_code.tar.gz" ;;
+        *) msg_error "Unknown analysis type for CMSSW_14 build: ${analysis}"; return 1 ;;
+    esac
+
+    if [[ ! -d "${PACKAGES_DIR}" ]]; then
+        msg_error "Packages directory missing: ${PACKAGES_DIR}"
+        return 1
+    fi
+    if [[ ! -f "${pkg}" ]]; then
+        msg_error "Package not found: ${pkg} (ensure common/packages is transferred)"
+        return 1
+    fi
+
+    local project_dir="${WORKDIR}/CMSSW_14_0_18"
+    export CMSSW_14_BASE="${project_dir}"
+    
+    if [[ ! -d "${project_dir}/src" ]]; then
+        msg_info "Creating CMSSW_14_0_18 project in el9 container at ${project_dir}..."
+        
+        local tmp_script=$(mktemp --suffix=_create_cmssw14.sh)
+        cat > "${tmp_script}" << CREATEEOF
+#!/bin/bash
+set -e
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+export SCRAM_ARCH=el9_amd64_gcc12
+cd "${WORKDIR}"
+scramv1 project CMSSW CMSSW_14_0_18
+CREATEEOF
+        chmod +x "${tmp_script}"
+        
+        apptainer exec \
+            --bind /cvmfs:/cvmfs \
+            --bind /afs:/afs \
+            --bind /eos:/eos \
+            --bind /tmp:/tmp \
+            --bind "${WORKDIR}:${WORKDIR}" \
+            "${EL9_CONTAINER}" \
+            /bin/bash "${tmp_script}"
+        rm -f "${tmp_script}"
+    fi
+
+    # Check for correct package structure based on analysis type
+    local pkg_check_dir=""
+    case "${analysis}" in
+        "JJP") pkg_check_dir="${project_dir}/src/JJPNtupleMaker/TPS-Onia2MuMu" ;;
+        "JUP") pkg_check_dir="${project_dir}/src/JUPNtupleMaker/TPS-Onia2MuMu" ;;
+    esac
+    
+    if [[ ! -d "${pkg_check_dir}" ]]; then
+        msg_info "Unpacking ${pkg} into CMSSW src..."
+        tar -xzf "${pkg}" -C "${project_dir}/src"
+    fi
+
+    local stamp="${project_dir}/.built_${analysis,,}"
+    if [[ ! -f "${stamp}" ]]; then
+        msg_info "Compiling ntuple code for ${analysis} in el9 container..."
+        
+        local tmp_script=$(mktemp --suffix=_build_cmssw14.sh)
+        cat > "${tmp_script}" << BUILDEOF
+#!/bin/bash
+set -e
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+export SCRAM_ARCH=el9_amd64_gcc12
+cd "${project_dir}/src"
+eval \$(scramv1 runtime -sh)
+scram b -j 4
+BUILDEOF
+        chmod +x "${tmp_script}"
+        
+        apptainer exec \
+            --bind /cvmfs:/cvmfs \
+            --bind /afs:/afs \
+            --bind /eos:/eos \
+            --bind /tmp:/tmp \
+            --bind "${WORKDIR}:${WORKDIR}" \
+            "${EL9_CONTAINER}" \
+            /bin/bash "${tmp_script}"
+        rm -f "${tmp_script}"
+        
+        touch "${stamp}"
+    else
+        msg_info "Reusing existing CMSSW_14_0_18 build for ${analysis}"
+    fi
 }
 
 # ==============================================================================
@@ -395,7 +567,14 @@ run_ntuple() {
     msg_step "Step 7: Ntuple (${ANALYSIS_TYPE})"
     
     NTUPLE_OUTPUT="${WORKDIR}/output_ntuple.root"
-    
+    MINIAOD_OUTPUT="${MINIAOD_OUTPUT:-${WORKDIR}/output_MINIAOD.root}"
+
+    if [[ ! -f "${MINIAOD_OUTPUT}" ]]; then
+        msg_error "Ntuple input missing: ${MINIAOD_OUTPUT}"
+        return 1
+    fi
+
+    prepare_cmssw14_from_package "${ANALYSIS_TYPE}" || return 1
     setup_cmssw14
     
     if [[ "${ANALYSIS_TYPE}" == "JJP" ]]; then
@@ -561,14 +740,39 @@ fi
 IFS=',' read -ra INPUT_SPECS <<< "$INPUTS"
 IFS=',' read -ra SHOWER_MODES <<< "$MODES"
 
-# Resolve LHE files from pool:index specs
+# Resolve LHE files from pool:index specs (supports GEN:pool:idx, EOS:pool:idx:usage, or pool:idx)
 LHE_FILES=()
+declare -a parts  # Declare array outside loop (no 'local' in main script)
 for spec in "${INPUT_SPECS[@]}"; do
-    pool_name="${spec%:*}"
-    index="${spec#*:}"
-    lhe_file=$(get_lhe_file "$pool_name" "$index")
-    if [[ -z "$lhe_file" ]]; then
-        msg_error "Could not resolve LHE file for: $spec"
+    if [[ "$spec" == GEN:* ]]; then
+        # Format: GEN:pool_name:lhe_job_idx - generated LHE from DAG
+        # The LHE file should be at EOS_LHE_POOL/pool_name/sample_pool_name_<seed>.lhe
+        IFS=':' read -ra parts <<< "$spec"
+        pool_name="${parts[1]}"
+        lhe_job_idx="${parts[2]}"
+        # For GEN: prefix, we look in the pool directory for any available file
+        # Seed is typically 100 + job_idx for DAG jobs
+        seed=$((100 + lhe_job_idx))
+        lhe_file="${EOS_LHE_POOL}/${pool_name}/sample_${pool_name}_${seed}.lhe"
+        if [[ ! -f "$lhe_file" ]]; then
+            # Try to find any lhe file in the pool
+            lhe_file=$(get_lhe_file "$pool_name" "$lhe_job_idx")
+        fi
+    elif [[ "$spec" == EOS:* ]]; then
+        # Format: EOS:pool_name:job_id:usage_idx - existing LHE from EOS
+        IFS=':' read -ra parts <<< "$spec"
+        pool_name="${parts[1]}"
+        job_id="${parts[2]}"
+        lhe_file=$(get_lhe_file "$pool_name" "$job_id")
+    else
+        # Legacy format: pool_name:index
+        pool_name="${spec%:*}"
+        index="${spec#*:}"
+        lhe_file=$(get_lhe_file "$pool_name" "$index")
+    fi
+    
+    if [[ -z "$lhe_file" ]] || [[ ! -f "$lhe_file" ]]; then
+        msg_error "Could not resolve LHE file for: $spec (tried: ${lhe_file:-<none>})"
         exit 1
     fi
     LHE_FILES+=("$lhe_file")
@@ -660,10 +864,13 @@ for step in "${SELECTED_STEPS[@]}"; do
     esac
 done
 
-# If mix was requested but output not found, fail early so tests surface the issue
-if [[ " ${SELECTED_STEPS[*]} " == *" mix "* ]] && [[ ! -f "${MIXED_HEPMC:-}" ]]; then
-    msg_error "Expected mixed HepMC at ${MIXED_HEPMC:-<unset>} but not found"
-    exit 1
+# If mix was requested but output not found, fail early so tests surface the issue.
+# Skip this check when cleanup removed intermediates (CLEANUP=true) or after transfer.
+if [[ " ${SELECTED_STEPS[*]} " == *" mix "* ]] && [[ " ${SELECTED_STEPS[*]} " != *" transfer "* ]] && [[ "${CLEANUP}" != "true" ]]; then
+    if [[ ! -f "${MIXED_HEPMC:-}" ]]; then
+        msg_error "Expected mixed HepMC at ${MIXED_HEPMC:-<unset>} but not found"
+        exit 1
+    fi
 fi
 
 msg_step "Production Complete!"

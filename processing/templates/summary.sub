@@ -6,8 +6,7 @@
 
 Universe = vanilla
 
-Executable = /bin/bash
-Arguments = -c "echo 'DAG completed at $(date)'; echo 'Campaign outputs stored in /eos/user/x/xcheng/MC_Production/output/'"
+Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/templates/summary.sh
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT

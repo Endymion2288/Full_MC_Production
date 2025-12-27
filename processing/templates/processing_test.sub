@@ -1,0 +1,50 @@
+# ==============================================================================
+# processing_test.sub - HTCondor submit file for MC processing (TEST MODE)
+# ==============================================================================
+# This template runs the full chain with reduced events for testing.
+# Uses --max-events flag to limit processing to ~100 events.
+# ==============================================================================
+
+Universe = vanilla
+
+# Executable and arguments - limit to 100 events
+Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh
+Arguments = --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events 100
+
+# Input files to transfer (self-contained sandbox)
+Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/pythia_shower, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common
+
+# Output handling
+Should_Transfer_Files = YES
+WhenToTransferOutput = ON_EXIT
+
+# Log files
+Output = log/proc_test_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error = log/proc_test_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log = log/proc_test_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
+
+# Resource requirements (reduced for test)
+request_cpus = 4
+request_memory = 16GB
+request_disk = 30GB
+
+# Job flavor - shorter for testing
++JobFlavour = "workday"
+
+# Run in CMSSW-compatible container (el9 for CMSSW_14 compatibility)
++SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
+
+# Environment setup - use actual user ID for proxy path
+Environment = "HOME=/afs/cern.ch/user/x/xcheng X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
+
+# Retry configuration
+MaxRetries = 1
+OnExitHold = (ExitCode != 0)
+OnExitHoldReason = "Job exited with non-zero status"
+
+# No host OS requirement - we run inside Singularity container
+# Requirements removed - el8 container runs fine on AlmaLinux9 hosts
+
+Queue 1

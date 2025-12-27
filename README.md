@@ -74,18 +74,20 @@ Full_MC_Production/
 First, create the required deployment packages. See `common/packages/README.md` for details.
 
 ```bash
-# Create HELAC package
+# Create HELAC package (source-only; built on worker)
 cd /afs/cern.ch/user/x/xcheng/condor/HELAC-on-HTCondor
-tar -czf helac_package.tar.gz HELAC-Onia-2.7.6/ HepMC/ sources/
+cp sources/HELAC-Onia-2.7.6.tar.gz .
+cp sources/hepmc2.06.11.tgz .
+tar -czf helac_package.tar.gz HELAC-Onia-2.7.6.tar.gz hepmc2.06.11.tgz
 cp helac_package.tar.gz /path/to/Full_MC_Production/common/packages/
 
-# Create JJP/JUP packages
+# Create JJP/JUP packages (built on worker)
 cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18/src/JJPNtupleMaker
-tar -czf jjp_code.tar.gz TPS-Onia2MuMu/
+tar --exclude='.git' --exclude='*.root' -czf jjp_code.tar.gz TPS-Onia2MuMu/
 cp jjp_code.tar.gz /path/to/Full_MC_Production/common/packages/
 
 cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18/src/JUPNtupleMaker
-tar -czf jup_code.tar.gz TPS-Onia2MuMu/
+tar --exclude='.git' --exclude='*.root' -czf jup_code.tar.gz TPS-Onia2MuMu/
 cp jup_code.tar.gz /path/to/Full_MC_Production/common/packages/
 ```
 

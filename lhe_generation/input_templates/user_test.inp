@@ -1,0 +1,92 @@
+# HELAC-Onia user.inp configuration - TEST VERSION (1000 events)
+# ================================================================
+
+# Compulsory information
+colpar 1            # colliding particles: 1=pp
+energy_beam1 6800d0 # beam 1 energy (GeV) - Run3 at 13.6 TeV
+energy_beam2 6800d0 # beam 2 energy (GeV)
+alphasrun 1
+alphaem 0.0072973525205055605d0
+alphaem_elasticphoton 0.0072973525205055605d0
+qcd 2               # only QCD
+
+# Quark masses
+cmass 1.54845d0     # charm quark mass (GeV)
+bmass 4.73020d0     # bottom quark mass (GeV)
+tmass 173d0
+taumass 1.777d0
+zmass 91.188d0
+wmass 80.419d0
+higmass 125d0
+mumass 0.1056583745d0
+emass 0.5109989461d-3
+
+# pp(bar) cuts
+cutoffp 1.0d-6
+minptl 0d0
+minptq 4.0d0        # minimum quark/gluon pt (GeV)
+minptc 0.0d0
+minptb 0.d0
+minptp 0d0
+minptconia 6.0d0    # minimum charmonium pt (GeV)
+minptbonia 2.0d0    # minimum bottomonium pt (GeV)
+
+# Rapidity cuts
+maxrapq 2.5d0
+maxyrapq 2.5d0
+minyrapq -2.5d0
+maxrapl 2.5d0
+maxyrapl 2.5d0
+minyrapl -2.5d0
+maxrapp 2.5d0
+maxyrapp 2.5d0
+minyrapp -2.5d0
+maxrapc 2.5d0
+maxyrapc 2.5d0
+minyrapc -2.5d0
+maxrapb 2.5d0
+maxyrapb 2.5d0
+minyrapb -2.5d0
+maxrapconia 2.4d0
+maxyrapconia 2.4d0
+minyrapconia -2.4d0
+maxrapbonia 2.4d0
+maxyrapbonia 2.4d0
+minyrapbonia -2.4d0
+
+# Separation cuts
+mindrll 0.d0
+mindrlq 0.d0
+mindrqq 0.0d0
+mindrqb 0.0d0
+mindrbb 0.0d0
+mindrpf 0.0d0
+
+# Mass cuts
+minmll 0.d0
+minmlq 0.d0
+minmpf 0.d0
+minmqqp 0.d0
+minmqb 0.d0
+minmbb 0.d0
+minmqbeam 0d0
+absoluterap F
+
+# Monte Carlo settings - TEST: only 1000 events
+unwgt T
+lhewgtup F
+preunw 3000         # reduced for testing
+unwevt 1000         # *** ONLY 1000 EVENTS FOR TESTING ***
+nmc 200000          # reduced phase space sampling
+nopt 20000
+nopt_step 20000
+optf 1
+maxopt 8
+noptlim 200000
+iopt 1
+alimit 0
+nlimit 1
+gener 0
+ranhel 4
+pdf 10000
+

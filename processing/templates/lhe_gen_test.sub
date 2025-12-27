@@ -1,0 +1,42 @@
+# ==============================================================================
+# lhe_gen_test.sub - HTCondor submit file for LHE generation (TEST - 100 events)
+# ==============================================================================
+
+Universe = vanilla
+
+# Executable and arguments - use --fast-test for 100 events only
+Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/lhe_generation/run_helac.sh
+Arguments = --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q) --fast-test
+
+# Input files
+Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common/packages/helac_package.tar.gz, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/lhe_generation/input_templates/user.inp
+
+# Output handling
+Should_Transfer_Files = YES
+WhenToTransferOutput = ON_EXIT
+
+# Log files
+Output = log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
+Error = log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
+Log = log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
+
+# Resource requirements - reduced for fast test
+request_cpus = 4
+request_memory = 8GB
+request_disk = 5GB
+
+# Job flavor - "espresso" = 20 min (fast test should complete quickly)
++JobFlavour = "microcentury"
+
+# Run in cmssw-el7 container
++SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64"
+
+# Retry failed jobs
+MaxRetries = 3
+OnExitHold = (ExitCode != 0)
+OnExitHoldReason = "Job exited with non-zero status"
+OnExitHoldSubCode = 1
+PeriodicRelease = (JobRunCount < 3) && (HoldReasonCode == 3)
+
+Queue 1
