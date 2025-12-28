@@ -37,6 +37,10 @@ HEPMC_SRC_TGZ=""
 HELAC_SRC_TAR=""
 HEPMC_PREFIX="${WORKDIR}/HepMC/HepMC-2.06.11"
 
+# T2_CN_Beijing XRootD storage paths
+EOS_HOST="cceos.ihep.ac.cn"
+EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production"
+
 # ----------------------------------------------------------------------------
 # Helper functions
 # ----------------------------------------------------------------------------
@@ -177,9 +181,9 @@ if [ -z "$PROCESS_STRING" ]; then
     esac
 fi
 
-# Set default output directory
+# Set default output directory (XRootD path for T2_CN_Beijing)
 if [ -z "$OUTPUT_DIR" ]; then
-    OUTPUT_DIR="/eos/user/x/xcheng/MC_Production/lhe_pools/${POOL_NAME}"
+    OUTPUT_DIR="lhe_pools/${POOL_NAME}"
 fi
 
 # Validate seed
@@ -303,12 +307,18 @@ fi
 
 echo "Found LHE file: $LHE_FILE"
 
-# Copy to output directory
-mkdir -p "$OUTPUT_DIR"
-OUTPUT_FILE="${OUTPUT_DIR}/sample_${POOL_NAME}_${MY_SEED}.lhe"
-cp "$LHE_FILE" "$OUTPUT_FILE"
+# Create remote directory and copy to T2_CN_Beijing storage via XRootD
+echo "Creating remote directory on T2_CN_Beijing..."
+xrdfs "${EOS_HOST}" mkdir -p "${EOS_PATH_BASE}/${OUTPUT_DIR}" || {
+    echo "Warning: mkdir failed (directory may already exist)"
+}
 
-echo "=============================================="
+OUTPUT_FILE="root://${EOS_HOST}/${EOS_PATH_BASE}/${OUTPUT_DIR}/sample_${POOL_NAME}_${MY_SEED}.lhe"
+echo "Staging out LHE file to: ${OUTPUT_FILE}"
+xrdcp --nopbar --force "$LHE_FILE" "${OUTPUT_FILE}" || {
+    echo "Error: Failed to stage out LHE file"
+    exit 1
+}
 echo "LHE generation complete!"
 echo "Output: $OUTPUT_FILE"
 echo "=============================================="

@@ -1,8 +1,35 @@
-# Full MC Production System
-# =========================
+# Full MC Production System (T2_CN_Beijing)
+# ==========================================
 
 A complete HTCondor DAGMan-based Monte Carlo production system for CMS physics analysis,
 covering the full chain from LHE generation to Ntuple production.
+
+**Target Site:** T2_CN_Beijing (IHEP)
+**Storage:** `root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production`
+
+## Quick Start - Before Submitting Jobs
+
+**IMPORTANT:** You must have a valid CMS VOMS proxy before submitting any jobs.
+
+```bash
+# 1. Setup CMS environment
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+
+# 2. Check and setup proxy (run this first!)
+./check_proxy.sh --init
+
+# 3. This will:
+#    - Initialize a 7-day CMS VOMS proxy
+#    - Copy proxy to persistent AFS location for HTCondor jobs
+#    - Create required directories on T2_CN_Beijing storage
+#    - Test XRootD access
+
+# To just check status:
+./check_proxy.sh --status
+
+# To test T2 access:
+./check_proxy.sh --test
+```
 
 ## Overview
 

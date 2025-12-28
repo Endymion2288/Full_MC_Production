@@ -43,14 +43,19 @@ except ImportError:
 # =============================================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EOS_BASE = "/eos/user/x/xcheng/MC_Production"
+
+# T2_CN_Beijing XRootD storage paths
+EOS_HOST = "cceos.ihep.ac.cn"
+EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production"
+EOS_BASE = "root://{}/{}".format(EOS_HOST, EOS_PATH_BASE)
+
 CMSSW_12 = "/afs/cern.ch/user/x/xcheng/condor/CMSSW_12_4_14_patch3"
 CMSSW_14 = "/afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18"
 
-# Existing LHE pools on EOS
+# Existing LHE pools on T2_CN_Beijing storage
 EXISTING_LHE_POOLS = {
-    "pool_jpsi_g": "/eos/user/x/xcheng/learn_MC/ggJpsig_Jpsi_pt6_g_pt4",
-    "pool_gg": "/eos/user/x/xcheng/learn_MC/gggg_g_pt4",
+    "pool_jpsi_g": "{}/lhe_pools/pool_jpsi_g".format(EOS_BASE),
+    "pool_gg": "{}/lhe_pools/pool_gg".format(EOS_BASE),
 }
 
 # =============================================================================

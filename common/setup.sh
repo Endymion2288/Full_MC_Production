@@ -28,14 +28,16 @@ export CMSSW_CONFIGS_DIR="${COMMON_DIR}/cmssw_configs"
 export CMSSW_12_BASE="/afs/cern.ch/user/x/xcheng/condor/CMSSW_12_4_14_patch3"
 export CMSSW_14_BASE="/afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18"
 
-# EOS paths
-export EOS_BASE="/eos/user/x/xcheng/MC_Production"
+# T2_CN_Beijing XRootD storage paths
+export EOS_HOST="cceos.ihep.ac.cn"
+export EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production"
+export EOS_BASE="root://${EOS_HOST}/${EOS_PATH_BASE}"
 export EOS_LHE_POOL="${EOS_BASE}/lhe_pools"
 export EOS_OUTPUT="${EOS_BASE}/output"
 
-# Existing LHE pools
-export EXISTING_LHE_JPSI_G="/eos/user/x/xcheng/learn_MC/ggJpsig_Jpsi_pt6_g_pt4"
-export EXISTING_LHE_GG="/eos/user/x/xcheng/learn_MC/gggg_g_pt4"
+# Existing LHE pools (now on T2_CN_Beijing storage)
+export EXISTING_LHE_JPSI_G="${EOS_BASE}/lhe_pools/pool_jpsi_g"
+export EXISTING_LHE_GG="${EOS_BASE}/lhe_pools/pool_gg"
 
 # Function to print colored messages
 msg_info() {
@@ -131,46 +133,81 @@ setup_pythia_shower() {
     msg_ok "Pythia8 shower environment ready"
 }
 
-# Function to ensure EOS directories exist
+# Function to ensure EOS directories exist (XRootD)
 ensure_eos_dirs() {
-    msg_info "Ensuring EOS output directories exist..."
+    msg_info "Ensuring EOS output directories exist on T2_CN_Beijing..."
     
-    for dir in "${EOS_BASE}" "${EOS_LHE_POOL}" "${EOS_OUTPUT}"; do
-        if [ ! -d "$dir" ]; then
-            mkdir -p "$dir" 2>/dev/null || msg_warn "Cannot create $dir (may need EOS mount)"
-        fi
+    for subdir in "lhe_pools" "output"; do
+        xrdfs "${EOS_HOST}" mkdir -p "${EOS_PATH_BASE}/${subdir}" 2>/dev/null || \
+            msg_warn "Cannot create ${EOS_PATH_BASE}/${subdir} (may already exist or permission issue)"
     done
 }
 
-# Function to get LHE file from pool
+# Function to create remote directory via XRootD
+make_remote_dir() {
+    local remote_path="$1"
+    msg_info "Creating remote directory: ${remote_path}"
+    xrdfs "${EOS_HOST}" mkdir -p "${EOS_PATH_BASE}/${remote_path}" || {
+        msg_error "Failed to create remote directory: ${EOS_PATH_BASE}/${remote_path}"
+        return 1
+    }
+    msg_ok "Remote directory ready: ${EOS_PATH_BASE}/${remote_path}"
+}
+
+# Function to stage out files via XRootD
+stage_out() {
+    local local_file="$1"
+    local remote_subpath="$2"
+    
+    if [[ ! -f "${local_file}" ]]; then
+        msg_error "Local file not found: ${local_file}"
+        return 1
+    fi
+    
+    local remote_url="${EOS_BASE}/${remote_subpath}"
+    msg_info "Staging out: ${local_file} -> ${remote_url}"
+    
+    xrdcp --nopbar --force "${local_file}" "${remote_url}" || {
+        msg_error "Failed to stage out ${local_file} to ${remote_url}"
+        return 1
+    }
+    msg_ok "Staged out: ${remote_url}"
+}
+
+# Function to get LHE file from pool (XRootD listing)
 get_lhe_file() {
     local pool_name="$1"
     local index="$2"
+    local pool_subpath="lhe_pools/${pool_name}"
     
-    case "$pool_name" in
-        "pool_jpsi_g")
-            local pool_dir="${EXISTING_LHE_JPSI_G}"
-            ;;
-        "pool_gg")
-            local pool_dir="${EXISTING_LHE_GG}"
-            ;;
-        *)
-            local pool_dir="${EOS_LHE_POOL}/${pool_name}"
-            ;;
-    esac
+    # List files via xrdfs
+    local file_list
+    file_list=$(xrdfs "${EOS_HOST}" ls "${EOS_PATH_BASE}/${pool_subpath}" 2>/dev/null | grep '\.lhe$' | sort)
     
-    # List files and get the nth one
-    local files=($(ls "${pool_dir}"/*.lhe 2>/dev/null))
+    if [[ -z "${file_list}" ]]; then
+        msg_error "No LHE files found in ${EOS_PATH_BASE}/${pool_subpath}"
+        return 1
+    fi
+    
+    # Convert to array
+    local files=()
+    while IFS= read -r line; do
+        files+=("${line}")
+    done <<< "${file_list}"
+    
     local n_files=${#files[@]}
     
-    if [ $n_files -eq 0 ]; then
-        msg_error "No LHE files found in ${pool_dir}"
+    if [[ $n_files -eq 0 ]]; then
+        msg_error "No LHE files found in ${pool_subpath}"
         return 1
     fi
     
     # Wrap around if index exceeds available files
     local file_idx=$((index % n_files))
-    echo "${files[$file_idx]}"
+    local selected_path="${files[$file_idx]}"
+    
+    # Return full XRootD URL
+    echo "root://${EOS_HOST}/${selected_path}"
 }
 
 # Parse command line arguments
@@ -190,6 +227,8 @@ fi
 export -f msg_info msg_ok msg_warn msg_error
 export -f setup_cms_base setup_cmssw12 setup_cmssw14 setup_helac
 export -f setup_pythia_shower ensure_eos_dirs get_lhe_file
+export -f make_remote_dir stage_out
 
 msg_info "MC Production environment variables set"
 msg_info "Base directory: ${MC_PRODUCTION_BASE}"
+msg_info "EOS storage: ${EOS_BASE}"

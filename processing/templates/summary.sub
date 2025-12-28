@@ -6,7 +6,7 @@
 
 Universe = vanilla
 
-Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/templates/summary.sh
+Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/templates/summary.sh
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
@@ -19,6 +19,7 @@ request_cpus = 1
 request_memory = 1GB
 request_disk = 1GB
 
-+JobFlavour = "espresso"
+# Target T2_CN_Beijing site
++DESIRED_Sites = "T2_CN_Beijing"
 
 Queue 1

@@ -10,3 +10,6 @@ processing/pythia_shower/shower_phi
 *.log
 *.out
 *.err
+*.tgz
+*.dag*
+dagman.config

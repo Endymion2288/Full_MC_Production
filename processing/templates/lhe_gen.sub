@@ -16,12 +16,12 @@
 Universe = vanilla
 
 # Executable and arguments
-Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/lhe_generation/run_helac.sh
+Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/lhe_generation/run_helac.sh
 Arguments = --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q)
 
 # Input files to transfer
-Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common/packages/helac_package.tar.gz, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/lhe_generation/input_templates/user.inp
+Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common/packages/helac_package.tar.gz, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/lhe_generation/input_templates/user.inp
 
 # Output handling
 Should_Transfer_Files = YES
@@ -38,9 +38,15 @@ request_cpus = 8
 request_memory = 15GB
 request_disk = 10GB
 
-# Job flavor (CERN batch system)
-# "tomorrow" = up to 1 day
-+JobFlavour = "tomorrow"
+# Target T2_CN_Beijing site
++DESIRED_Sites = "T2_CN_Beijing"
+
+# X509 proxy for XRootD storage access
+x509userproxy = /afs/cern.ch/user/x/xcheng/x509up_u180107
+use_x509userproxy = true
+
+# Environment setup
+Environment = "HOME=/afs/cern.ch/user/x/xcheng X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
 
 # Run in cmssw-el7 container (required for HELAC-Onia)
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64"

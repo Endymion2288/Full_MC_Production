@@ -8,13 +8,13 @@
 Universe = vanilla
 
 # Executable and arguments - limit to 100 events
-Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh
+Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/run_chain.sh
 Arguments = --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events 100
 
 # Input files to transfer (self-contained sandbox)
-Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/pythia_shower, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common
+Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/run_chain.sh, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/pythia_shower, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common
 
 # Output handling
 Should_Transfer_Files = YES
@@ -30,8 +30,8 @@ request_cpus = 4
 request_memory = 16GB
 request_disk = 30GB
 
-# Job flavor - shorter for testing
-+JobFlavour = "workday"
+# Target T2_CN_Beijing site
++DESIRED_Sites = "T2_CN_Beijing"
 
 # Run in CMSSW-compatible container (el9 for CMSSW_14 compatibility)
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"

@@ -47,15 +47,17 @@ fi
 CMSSW_12_BASE="${CMSSW_12_BASE:-/afs/cern.ch/user/x/xcheng/condor/CMSSW_12_4_14_patch3}"
 CMSSW_14_BASE="${CMSSW_14_BASE:-/afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18}"
 
-# EOS paths
-EOS_BASE="/eos/user/x/xcheng/MC_Production"
+# T2_CN_Beijing XRootD storage paths
+EOS_HOST="cceos.ihep.ac.cn"
+EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production"
+EOS_BASE="root://${EOS_HOST}/${EOS_PATH_BASE}"
 EOS_LHE_POOL="${EOS_BASE}/lhe_pools"
 EOS_OUTPUT="${EOS_BASE}/output"
 
-# Existing LHE pools
+# Existing LHE pools (now on T2_CN_Beijing storage)
 declare -A EXISTING_POOLS=(
-    ["pool_jpsi_g"]="/eos/user/x/xcheng/learn_MC/ggJpsig_Jpsi_pt6_g_pt4"
-    ["pool_gg"]="/eos/user/x/xcheng/learn_MC/gggg_g_pt4"
+    ["pool_jpsi_g"]="lhe_pools/pool_jpsi_g"
+    ["pool_gg"]="lhe_pools/pool_gg"
 )
 
 # Colors
@@ -80,30 +82,77 @@ msg_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 msg_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 msg_step() { echo -e "\n${YELLOW}========================================${NC}"; echo -e "${YELLOW}  $1${NC}"; echo -e "${YELLOW}========================================${NC}\n"; }
 
+# Create remote directory via XRootD
+make_remote_dir() {
+    local remote_subpath="$1"
+    msg_info "Creating remote directory: ${EOS_PATH_BASE}/${remote_subpath}"
+    xrdfs "${EOS_HOST}" mkdir -p "${EOS_PATH_BASE}/${remote_subpath}" || {
+        msg_error "Failed to create remote directory: ${EOS_PATH_BASE}/${remote_subpath}"
+        return 1
+    }
+    msg_ok "Remote directory ready: ${EOS_PATH_BASE}/${remote_subpath}"
+}
+
+# Stage out files via XRootD
+stage_out() {
+    local local_file="$1"
+    local remote_subpath="$2"
+    
+    if [[ ! -f "${local_file}" ]]; then
+        msg_error "Local file not found: ${local_file}"
+        return 1
+    fi
+    
+    local remote_url="${EOS_BASE}/${remote_subpath}"
+    msg_info "Staging out: ${local_file} -> ${remote_url}"
+    
+    xrdcp --nopbar --force "${local_file}" "${remote_url}" || {
+        msg_error "Failed to stage out ${local_file} to ${remote_url}"
+        return 1
+    }
+    msg_ok "Staged out: ${remote_url}"
+}
+
 get_lhe_file() {
     local pool_name="$1"
     local index="$2"
-    local pool_dir=""
+    local pool_subpath=""
     
-    # Check for existing pool
+    # Check for existing pool (use subpath from EXISTING_POOLS)
     if [[ -n "${EXISTING_POOLS[$pool_name]}" ]]; then
-        pool_dir="${EXISTING_POOLS[$pool_name]}"
+        pool_subpath="${EXISTING_POOLS[$pool_name]}"
     else
-        pool_dir="${EOS_LHE_POOL}/${pool_name}"
+        pool_subpath="lhe_pools/${pool_name}"
     fi
     
-    # Get files
-    local files=($(ls "${pool_dir}"/*.lhe 2>/dev/null | sort))
+    # List files via xrdfs
+    local file_list
+    file_list=$(xrdfs "${EOS_HOST}" ls "${EOS_PATH_BASE}/${pool_subpath}" 2>/dev/null | grep '\.lhe$' | sort)
+    
+    if [[ -z "${file_list}" ]]; then
+        msg_error "No LHE files found in ${EOS_PATH_BASE}/${pool_subpath}"
+        return 1
+    fi
+    
+    # Convert to array
+    local files=()
+    while IFS= read -r line; do
+        files+=("${line}")
+    done <<< "${file_list}"
+    
     local n_files=${#files[@]}
     
     if [[ $n_files -eq 0 ]]; then
-        msg_error "No LHE files found in ${pool_dir}"
+        msg_error "No LHE files found in ${pool_subpath}"
         return 1
     fi
     
     # Wrap around if index exceeds available files
     local file_idx=$((index % n_files))
-    echo "${files[$file_idx]}"
+    local selected_path="${files[$file_idx]}"
+    
+    # Return full XRootD URL
+    echo "root://${EOS_HOST}/${selected_path}"
 }
 
 setup_cmssw12() {
@@ -606,20 +655,22 @@ run_ntuple() {
 
 # Step 8: Transfer output
 transfer_output() {
-    msg_step "Step 8: Transfer to EOS"
+    msg_step "Step 8: Transfer to T2_CN_Beijing Storage"
     
-    local output_dir="${EOS_OUTPUT}/${CAMPAIGN_NAME}/${JOB_ID}"
-    mkdir -p "${output_dir}"
+    local output_subpath="output/${CAMPAIGN_NAME}/${JOB_ID}"
     
-    # Copy final outputs
+    # Create remote directory
+    make_remote_dir "${output_subpath}" || return 1
+    
+    # Copy final outputs via XRootD
     if [[ -f "${MINIAOD_OUTPUT}" ]]; then
-        cp "${MINIAOD_OUTPUT}" "${output_dir}/"
-        msg_ok "Copied MiniAOD to ${output_dir}/"
+        local miniaod_basename=$(basename "${MINIAOD_OUTPUT}")
+        stage_out "${MINIAOD_OUTPUT}" "${output_subpath}/${miniaod_basename}" || return 1
     fi
     
     if [[ -f "${NTUPLE_OUTPUT}" ]]; then
-        cp "${NTUPLE_OUTPUT}" "${output_dir}/"
-        msg_ok "Copied Ntuple to ${output_dir}/"
+        local ntuple_basename=$(basename "${NTUPLE_OUTPUT}")
+        stage_out "${NTUPLE_OUTPUT}" "${output_subpath}/${ntuple_basename}" || return 1
     fi
     
     # Cleanup intermediate files
@@ -631,6 +682,8 @@ transfer_output() {
         rm -f "${WORKDIR}"/output_RECO.root
         msg_ok "Cleanup complete"
     fi
+    
+    msg_ok "Transfer complete: ${EOS_BASE}/${output_subpath}/"
 }
 
 # ==============================================================================

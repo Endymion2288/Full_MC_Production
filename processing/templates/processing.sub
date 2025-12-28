@@ -16,13 +16,13 @@
 Universe = vanilla
 
 # Executable and arguments
-Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh
+Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/run_chain.sh
 Arguments = --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id)
 
 # Input files to transfer (self-contained sandbox)
-Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh, \
-					   /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/pythia_shower, \
-					   /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common
+Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/run_chain.sh, \
+					   /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/pythia_shower, \
+					   /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common
 
 # Output handling
 Should_Transfer_Files = YES
@@ -39,9 +39,8 @@ request_cpus = 8
 request_memory = 20GB
 request_disk = 50GB
 
-# Job flavor (CERN batch system)
-# "nextweek" = up to 1 week (needed for full chain)
-+JobFlavour = "nextweek"
+# Target T2_CN_Beijing site
++DESIRED_Sites = "T2_CN_Beijing"
 
 # Run in CMSSW-compatible container
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
