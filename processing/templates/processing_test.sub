@@ -33,6 +33,10 @@ request_disk = 30GB
 # Target T2_CN_Beijing site
 +DESIRED_Sites = "T2_CN_Beijing"
 
+# X509 proxy for XRootD storage access
+x509userproxy = /afs/cern.ch/user/x/xcheng/x509up_u180107
+use_x509userproxy = true
+
 # Run in CMSSW-compatible container (el9 for CMSSW_14 compatibility)
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
 

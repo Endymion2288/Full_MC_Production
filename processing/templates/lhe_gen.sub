@@ -24,8 +24,8 @@ Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN
                        /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/lhe_generation/input_templates/user.inp
 
 # Output handling
-Should_Transfer_Files = YES
-WhenToTransferOutput = ON_EXIT
+# LHE files are staged out via XRootD to T2, don't transfer any output files back
+transfer_output_files =
 
 # Log files
 Output = log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
@@ -37,6 +37,10 @@ Log = log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
 request_cpus = 8
 request_memory = 15GB
 request_disk = 10GB
+
+# Wall time limit - LHE generation can take many hours
+# Set to 3 days (259200 seconds) to be safe
++MaxRuntime = 259200
 
 # Target T2_CN_Beijing site
 +DESIRED_Sites = "T2_CN_Beijing"

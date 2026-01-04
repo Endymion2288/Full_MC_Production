@@ -20,6 +20,7 @@ Date: 2024
 import argparse
 import os
 import sys
+import subprocess
 from datetime import datetime
 
 # Python 3.6 compatibility
@@ -49,14 +50,98 @@ EOS_HOST = "cceos.ihep.ac.cn"
 EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production"
 EOS_BASE = "root://{}/{}".format(EOS_HOST, EOS_PATH_BASE)
 
+# X509 proxy path for XRootD access
+X509_PROXY_PATH = "/afs/cern.ch/user/x/xcheng/x509up_u180107"
+
 CMSSW_12 = "/afs/cern.ch/user/x/xcheng/condor/CMSSW_12_4_14_patch3"
 CMSSW_14 = "/afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18"
 
-# Existing LHE pools on T2_CN_Beijing storage
-EXISTING_LHE_POOLS = {
-    "pool_jpsi_g": "{}/lhe_pools/pool_jpsi_g".format(EOS_BASE),
-    "pool_gg": "{}/lhe_pools/pool_gg".format(EOS_BASE),
-}
+# =============================================================================
+# T2 Storage Check Functions
+# =============================================================================
+
+def check_proxy_valid() -> bool:
+    """Check if X509 proxy is valid"""
+    if not os.path.exists(X509_PROXY_PATH):
+        print(f"[ERROR] X509 proxy not found: {X509_PROXY_PATH}")
+        return False
+    
+    try:
+        result = subprocess.run(
+            ["voms-proxy-info", "-file", X509_PROXY_PATH, "-timeleft"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            timeleft = int(result.stdout.strip())
+            if timeleft > 3600:  # At least 1 hour remaining
+                print(f"[OK] X509 proxy valid (timeleft: {timeleft}s)")
+                return True
+            else:
+                print(f"[WARN] X509 proxy expiring soon (timeleft: {timeleft}s)")
+                return timeleft > 0
+    except Exception as e:
+        print(f"[WARN] Could not check proxy: {e}")
+    return True  # Assume valid if can't check
+
+def count_lhe_files_on_t2(pool_name: str) -> int:
+    """Count LHE files in a pool on T2_CN_Beijing storage via xrdfs"""
+    pool_path = "{}/lhe_pools/{}".format(EOS_PATH_BASE, pool_name)
+    
+    env = os.environ.copy()
+    env["X509_USER_PROXY"] = X509_PROXY_PATH
+    
+    try:
+        result = subprocess.run(
+            ["xrdfs", EOS_HOST, "ls", pool_path],
+            capture_output=True, text=True, timeout=30, env=env
+        )
+        if result.returncode != 0:
+            # Directory might not exist
+            return 0
+        
+        # Count .lhe files
+        lines = result.stdout.strip().split('\n')
+        lhe_files = [f for f in lines if f.endswith('.lhe')]
+        return len(lhe_files)
+    except subprocess.TimeoutExpired:
+        print(f"[WARN] Timeout checking {pool_name} on T2")
+        return 0
+    except Exception as e:
+        print(f"[WARN] Error checking {pool_name}: {e}")
+        return 0
+
+def scan_existing_pools(required_pools: List[str], min_files: int) -> Dict[str, str]:
+    """
+    Scan T2 storage and return dict of pools that have sufficient files.
+    
+    Args:
+        required_pools: List of pool names to check
+        min_files: Minimum number of files needed
+        
+    Returns:
+        Dict mapping pool_name -> EOS path for pools with sufficient files
+    """
+    print("\n[INFO] Scanning T2_CN_Beijing storage for existing LHE pools...")
+    print(f"[INFO] Minimum files required: {min_files}")
+    
+    if not check_proxy_valid():
+        print("[WARN] Proxy check failed, assuming no existing pools")
+        return {}
+    
+    existing = {}
+    for pool_name in required_pools:
+        count = count_lhe_files_on_t2(pool_name)
+        status = "✓" if count >= min_files else "✗"
+        print(f"  {pool_name}: {count} files [{status}]")
+        
+        if count >= min_files:
+            existing[pool_name] = "{}/lhe_pools/{}".format(EOS_BASE, pool_name)
+    
+    print(f"[INFO] Found {len(existing)} pool(s) with sufficient files\n")
+    return existing
+
+# Dynamic pool status (populated at runtime)
+RUNTIME_EXISTING_POOLS: Dict[str, str] = {}
 
 # =============================================================================
 # Data Classes (Python 3.6 compatible)
@@ -99,22 +184,23 @@ LHE_POOLS: Dict[str, LHEPool] = {
         process="g g > cc~(3S11) g",
         description="gg -> J/psi + g (Color Singlet)",
         min_pt_conia=6.0,
-        min_pt_q=4.0,
-        eos_path=EXISTING_LHE_POOLS.get("pool_jpsi_g")
+        min_pt_q=4.0
+        # No eos_path - will be generated
     ),
     "pool_upsilon_g": LHEPool(
         name="pool_upsilon_g", 
         process="g g > bb~(3S11) g",
         description="gg -> Upsilon(1S) + g (Color Singlet)",
-        min_pt_bonia=2.0,
+        min_pt_bonia=4.0,
         min_pt_q=4.0
+        # eos_path determined at runtime by scan_existing_pools()
     ),
     "pool_gg": LHEPool(
         name="pool_gg",
         process="g g > g g",
         description="gg -> gg (QCD dijet)",
-        min_pt_q=4.0,
-        eos_path=EXISTING_LHE_POOLS.get("pool_gg")
+        min_pt_q=4.0
+        # No eos_path - will be generated
     ),
     "pool_2jpsi_g": LHEPool(
         name="pool_2jpsi_g",
@@ -128,7 +214,7 @@ LHE_POOLS: Dict[str, LHEPool] = {
         process="g g > cc~(3S11) bb~(3S11) g", 
         description="gg -> J/psi + Upsilon + g (SPS for JUP)",
         min_pt_conia=6.0,
-        min_pt_bonia=2.0,
+        min_pt_bonia=4.0,
         min_pt_q=4.0
     ),
 }
@@ -467,8 +553,8 @@ Examples:
     
     parser.add_argument("--campaign", "-c", type=str,
                         help="Campaign name (or ALL, JJP_ALL, JUP_ALL)")
-    parser.add_argument("--jobs", "-n", type=int, default=100,
-                        help="Number of jobs per campaign (default: 100)")
+    parser.add_argument("--jobs", "-n", type=int, default=1000,
+                        help="Number of jobs per campaign (default: 1000)")
     parser.add_argument("--output", "-o", type=str, default="mc_production.dag",
                         help="Output DAG filename (default: mc_production.dag)")
     parser.add_argument("--output-dir", type=str, default=BASE_DIR,
@@ -511,6 +597,28 @@ Examples:
     print(f"\n[INFO] Generating DAG for campaigns: {', '.join(campaigns)}")
     print(f"[INFO] Jobs per campaign: {args.jobs}")
     print(f"[INFO] Output file: {args.output}")
+    
+    # Collect all required LHE pools
+    required_pools = set()
+    for cname in campaigns:
+        for pool_name in CAMPAIGNS[cname].inputs:
+            required_pools.add(pool_name)
+    
+    print(f"[INFO] Required LHE pools: {', '.join(sorted(required_pools))}")
+    
+    # Auto-scan T2 storage to check which pools have sufficient files
+    existing_pools = scan_existing_pools(list(required_pools), args.jobs)
+    
+    # Update LHE_POOLS with detected existing files
+    for pool_name, eos_path in existing_pools.items():
+        if pool_name in LHE_POOLS:
+            LHE_POOLS[pool_name].eos_path = eos_path
+            print(f"[OK] {pool_name} will use existing files from T2")
+    
+    # Report which pools will be generated
+    for pool_name in required_pools:
+        if pool_name not in existing_pools:
+            print(f"[INFO] {pool_name} will be generated (insufficient files on T2)")
     
     # Generate DAG
     generator = DAGGenerator(args.output_dir)

@@ -16,17 +16,19 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O2 -Wall
 
-# Get paths from environment (CMSSW provides these)
-PYTHIA8_INCLUDE = $(shell pythia8-config --includedir 2>/dev/null || echo "")
-PYTHIA8_LIBS = $(shell pythia8-config --libs 2>/dev/null || echo "-lpythia8")
+# Fixed paths on CVMFS for el8_amd64_gcc10 (CMSSW_12_4_14_patch3)
+# These are stable paths that work inside Singularity containers
+PYTHIA8_BASE_EL8 = /cvmfs/cms.cern.ch/el8_amd64_gcc10/external/pythia8/306-494ded5c626b685d055d5b022e918c0c
+HEPMC3_BASE_EL8 = /cvmfs/cms.cern.ch/el8_amd64_gcc10/external/hepmc3/3.2.5-c3cd50aeecf06b194814f1a75bf7872e
+HEPMC2_BASE_EL8 = /cvmfs/cms.cern.ch/el8_amd64_gcc10/external/hepmc/2.06.10-46867a6dcc6e5712b7953fe57085fcbd
 
-# HepMC3 paths (from CMSSW)
-HEPMC3_INCLUDE = $(HEPMC3_DIR)/include
-HEPMC3_LIB = $(HEPMC3_DIR)/lib64
-
-# HepMC2 paths (for event mixer)
-HEPMC2_INCLUDE = $(HEPMC2_DIR)/include
-HEPMC2_LIB = $(HEPMC2_DIR)/lib
+# Use environment variables if set, otherwise use fixed paths
+PYTHIA8_INCLUDE = $(if $(PYTHIA8_BASE),$(PYTHIA8_BASE)/include,$(PYTHIA8_BASE_EL8)/include)
+PYTHIA8_LIBDIR = $(if $(PYTHIA8_BASE),$(PYTHIA8_BASE)/lib,$(PYTHIA8_BASE_EL8)/lib)
+HEPMC3_INCLUDE = $(if $(HEPMC3_BASE),$(HEPMC3_BASE)/include,$(HEPMC3_BASE_EL8)/include)
+HEPMC3_LIBDIR = $(if $(HEPMC3_BASE),$(HEPMC3_BASE)/lib64,$(HEPMC3_BASE_EL8)/lib64)
+HEPMC2_INCLUDE = $(if $(HEPMC_BASE),$(HEPMC_BASE)/include,$(HEPMC2_BASE_EL8)/include)
+HEPMC2_LIBDIR = $(if $(HEPMC_BASE),$(HEPMC_BASE)/lib,$(HEPMC2_BASE_EL8)/lib)
 
 # Targets
 SHOWER_PROGS = shower_normal shower_phi
@@ -47,36 +49,37 @@ check-env:
 		exit 1; \
 	fi
 	@echo "Building with CMSSW environment: $(CMSSW_VERSION)"
+	@echo "  PYTHIA8_INCLUDE: $(PYTHIA8_INCLUDE)"
+	@echo "  PYTHIA8_LIBDIR:  $(PYTHIA8_LIBDIR)"
+	@echo "  HEPMC3_INCLUDE:  $(HEPMC3_INCLUDE)"
+	@echo "  HEPMC3_LIBDIR:   $(HEPMC3_LIBDIR)"
 
-# Shower programs (use HepMC3)
+# Shower programs (use Pythia8 and HepMC3)
 shower_normal: shower_normal.cc
 	@echo "Building shower_normal..."
 	$(CXX) $(CXXFLAGS) $< -o $@ \
-		$(PYTHIA8_LIBS) \
-		-I$(HEPMC3_INCLUDE) -L$(HEPMC3_LIB) \
-		-Wl,-rpath,$(HEPMC3_LIB) \
-		-lHepMC3
+		-I$(PYTHIA8_INCLUDE) -L$(PYTHIA8_LIBDIR) \
+		-I$(HEPMC3_INCLUDE) -L$(HEPMC3_LIBDIR) \
+		-Wl,-rpath,$(PYTHIA8_LIBDIR) -Wl,-rpath,$(HEPMC3_LIBDIR) \
+		-lpythia8 -lHepMC3
 	@echo "Built: $@"
 
 shower_phi: shower_phi.cc
 	@echo "Building shower_phi..."
 	$(CXX) $(CXXFLAGS) $< -o $@ \
-		$(PYTHIA8_LIBS) \
-		-I$(HEPMC3_INCLUDE) -L$(HEPMC3_LIB) \
-		-Wl,-rpath,$(HEPMC3_LIB) \
-		-lHepMC3
+		-I$(PYTHIA8_INCLUDE) -L$(PYTHIA8_LIBDIR) \
+		-I$(HEPMC3_INCLUDE) -L$(HEPMC3_LIBDIR) \
+		-Wl,-rpath,$(PYTHIA8_LIBDIR) -Wl,-rpath,$(HEPMC3_LIBDIR) \
+		-lpythia8 -lHepMC3
 	@echo "Built: $@"
 
 # Event mixer (uses both HepMC3 and HepMC2)
 event_mixer_multisource: event_mixer_multisource.cc
 	@echo "Building event_mixer_multisource..."
-	@if [ -z "$(HEPMC2_DIR)" ]; then \
-		echo "Warning: HEPMC2_DIR not set, using default paths"; \
-	fi
 	$(CXX) $(CXXFLAGS) $< -o $@ \
 		-I$(HEPMC3_INCLUDE) -I$(HEPMC2_INCLUDE) \
-		-L$(HEPMC3_LIB) -L$(HEPMC2_LIB) \
-		-Wl,-rpath,$(HEPMC3_LIB) -Wl,-rpath,$(HEPMC2_LIB) \
+		-L$(HEPMC3_LIBDIR) -L$(HEPMC2_LIBDIR) \
+		-Wl,-rpath,$(HEPMC3_LIBDIR) -Wl,-rpath,$(HEPMC2_LIBDIR) \
 		-lHepMC3 -lHepMC
 	@echo "Built: $@"
 

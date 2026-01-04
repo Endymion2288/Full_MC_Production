@@ -26,11 +26,9 @@ ivars.register('runOnMC',
                VarParsing.VarParsing.varType.bool,
                "Run on MC (True) or Data (False)")
 
-ivars.register('maxEvents',
-               -1,
-               VarParsing.VarParsing.multiplicity.singleton,
-               VarParsing.VarParsing.varType.int,
-               "Maximum number of events")
+# Note: maxEvents is already registered by VarParsing('analysis')
+# Set default value instead of re-registering
+ivars.maxEvents = -1
 
 ivars.parseArguments()
 
@@ -136,7 +134,8 @@ from PhysicsTools.PatAlgos.tools.trackTools import *
 # ==============================================================================
 
 # Load JUP Onia2MuMu analyzer
-process.load("TPS-Onia2MuMu.src.Onia2MuMuPAT_cfi")
+# Note: TPS_Onia2MuMu uses underscore (not hyphen) for Python import compatibility
+process.load("JUPNtupleMaker.TPS_Onia2MuMu.onia2MuMuPAT_cfi")
 
 # Configure for J/psi + Upsilon + phi final state
 process.onia2MuMuPAT.muons = cms.InputTag("slimmedMuons")

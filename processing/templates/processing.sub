@@ -25,8 +25,10 @@ Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN
 					   /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common
 
 # Output handling
-Should_Transfer_Files = YES
-WhenToTransferOutput = ON_EXIT
+# We use XRootD stage-out to T2 storage, so don't transfer any output files back
+# This avoids the 1GB transfer limit and saves AFS space
+# stdout/stderr are handled separately by HTCondor via Output/Error directives
+transfer_output_files =
 
 # Log files
 Output = log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
@@ -39,13 +41,20 @@ request_cpus = 8
 request_memory = 20GB
 request_disk = 50GB
 
+# Wall time limit - full MC chain needs many hours
+# Set to 3 days (259200 seconds) as requested
++MaxRuntime = 259200
+
 # Target T2_CN_Beijing site
 +DESIRED_Sites = "T2_CN_Beijing"
+
+# X509 proxy for XRootD storage access
+x509userproxy = /afs/cern.ch/user/x/xcheng/x509up_u180107
+use_x509userproxy = true
 
 # Run in CMSSW-compatible container
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
 
-# Environment setup
 # Environment setup - use actual user ID for proxy path
 Environment = "HOME=/afs/cern.ch/user/x/xcheng X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
 

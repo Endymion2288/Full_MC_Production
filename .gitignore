@@ -4,6 +4,7 @@ processing/pythia_shower/event_mixer_multisource
 processing/pythia_shower/shower_normal
 processing/pythia_shower/shower_phi
 *.tar.gz
+*.tar.gz.bak
 *.root
 *.lhe
 *.txt
@@ -13,3 +14,6 @@ processing/pythia_shower/shower_phi
 *.tgz
 *.dag*
 dagman.config
+__pycache__/
+*.pyc
+tmp/

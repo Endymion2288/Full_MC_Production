@@ -22,4 +22,8 @@ request_disk = 1GB
 # Target T2_CN_Beijing site
 +DESIRED_Sites = "T2_CN_Beijing"
 
+# X509 proxy for XRootD storage access (for consistency)
+x509userproxy = /afs/cern.ch/user/x/xcheng/x509up_u180107
+use_x509userproxy = true
+
 Queue 1
