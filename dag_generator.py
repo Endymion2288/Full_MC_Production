@@ -184,16 +184,16 @@ LHE_POOLS: Dict[str, LHEPool] = {
         process="g g > cc~(3S11) g",
         description="gg -> J/psi + g (Color Singlet)",
         min_pt_conia=6.0,
-        min_pt_q=4.0
-        # No eos_path - will be generated
+        min_pt_q=4.0,
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_jpsi_g"
     ),
     "pool_upsilon_g": LHEPool(
         name="pool_upsilon_g", 
         process="g g > bb~(3S11) g",
         description="gg -> Upsilon(1S) + g (Color Singlet)",
         min_pt_bonia=4.0,
-        min_pt_q=4.0
-        # eos_path determined at runtime by scan_existing_pools()
+        min_pt_q=4.0,
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_upsilon_g"
     ),
     "pool_gg": LHEPool(
         name="pool_gg",

@@ -16,9 +16,8 @@ Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN
                        /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/pythia_shower, \
                        /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common
 
-# Output handling
-Should_Transfer_Files = YES
-WhenToTransferOutput = ON_EXIT
+# Output handling (match production: stage-out via XRootD, no AFS transfer)
+transfer_output_files =
 
 # Log files
 Output = log/proc_test_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
@@ -33,6 +32,8 @@ request_disk = 30GB
 # Target T2_CN_Beijing site
 +DESIRED_Sites = "T2_CN_Beijing"
 
++MaxRuntime = 259200
+
 # X509 proxy for XRootD storage access
 x509userproxy = /afs/cern.ch/user/x/xcheng/x509up_u180107
 use_x509userproxy = true
@@ -40,8 +41,8 @@ use_x509userproxy = true
 # Run in CMSSW-compatible container (el9 for CMSSW_14 compatibility)
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
 
-# Environment setup - use actual user ID for proxy path
-Environment = "HOME=/afs/cern.ch/user/x/xcheng X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
+# Environment setup - align with production (HOME on /srv)
+Environment = "HOME=/srv X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
 
 # Retry configuration
 MaxRetries = 1

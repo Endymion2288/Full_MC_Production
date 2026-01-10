@@ -81,7 +81,7 @@ process.out = cms.OutputModule("PoolOutputModule",
     outputCommands = cms.untracked.vstring('drop *')
 )
 
-# Filters
+# Filters (MiniAOD has no generalTracks, so omit noscraping)
 process.primaryVertexFilter = cms.EDFilter("GoodVertexFilter",
     vertexCollection = cms.InputTag('offlineSlimmedPrimaryVertices'),
     minimumNDOF = cms.uint32(4),
@@ -107,8 +107,8 @@ patMuons.embedTrack = cms.bool(True)
 patMuons.embedPickyMuon = cms.bool(False)
 patMuons.embedTpfmsMuon = cms.bool(False)
 
-# Filter sequence
-process.filter = cms.Sequence(process.primaryVertexFilter + process.noscraping)
+# Filter sequence (only PV filter for MiniAOD inputs)
+process.filter = cms.Sequence(process.primaryVertexFilter)
 
 # Gen particle producer for MC matching
 process.genParticlePlusGEANT = cms.EDProducer("GenPlusSimParticleProducer",
@@ -133,43 +133,51 @@ from PhysicsTools.PatAlgos.tools.trackTools import *
 # JUP-specific analyzer configuration
 # ==============================================================================
 
-# Load JUP Onia2MuMu analyzer
-# Note: TPS_Onia2MuMu uses underscore (not hyphen) for Python import compatibility
-process.load("JUPNtupleMaker.TPS_Onia2MuMu.onia2MuMuPAT_cfi")
+process.mkcands = cms.EDAnalyzer('MultiLepPAT',
+        HLTriggerResults = cms.untracked.InputTag("TriggerResults","","HLT"),
+        inputGEN  = cms.untracked.InputTag("genParticles"),
+        VtxSample   = cms.untracked.string('offlineSlimmedPrimaryVertices'),
+        DoJPsiMassConstraint = cms.untracked.bool(True),
+        DoMonteCarloTree = cms.untracked.bool(False),
+        MonteCarloParticleId = cms.untracked.int32(20443),
+        trackQualities = cms.untracked.vstring('loose','tight','highPurity'),
+        MinNumMuPixHits = cms.untracked.int32(1),
+        MinNumMuSiHits = cms.untracked.int32(3),
+        MaxMuNormChi2 = cms.untracked.double(99999),
+        MaxMuD0 = cms.untracked.double(10.0),
+        MaxJPsiMass = cms.untracked.double(3.4),
+        MinJPsiMass = cms.untracked.double(2.7),
+        MinNumTrSiHits = cms.untracked.int32(4),
+        MinMuPt = cms.untracked.double(1.95),
+        JPsiKKKMaxDR = cms.untracked.double(1.5),
+        XCandPiPiMaxDR = cms.untracked.double(1.5),
+        UseXDr = cms.untracked.bool(False),
+        JPsiKKKMaxMass = cms.untracked.double(5.6),
+        JPsiKKKMinMass = cms.untracked.double(5.0),
+        resolvePileUpAmbiguity = cms.untracked.bool(True),
+        addXlessPrimaryVertex = cms.untracked.bool(True),
+        Debug_Output = cms.untracked.bool(False),
 
-# Configure for J/psi + Upsilon + phi final state
-process.onia2MuMuPAT.muons = cms.InputTag("slimmedMuons")
-process.onia2MuMuPAT.primaryVertexTag = cms.InputTag("offlineSlimmedPrimaryVertices")
-process.onia2MuMuPAT.beamSpotTag = cms.InputTag("offlineBeamSpot")
+        TriggersForJpsi = cms.untracked.vstring(
+            "HLT_Dimuon0_Jpsi3p5_Muon2_v",
+            "HLT_DoubleMu4_3_LowMass_v"
+        ),
+        FiltersForJpsi = cms.untracked.vstring(
+            "hltVertexmumuFilterJpsiMuon3p5",
+            "hltDisplacedmumuFilterDoubleMu43LowMass"
+        ),
 
-# JUP-specific particle selections
-# Require one J/psi and one Upsilon candidate reconstructed from muon pairs
-process.onia2MuMuPAT.onia1Particle = cms.string("J/psi")
-process.onia2MuMuPAT.onia2Particle = cms.string("Upsilon")
+        TriggersForUpsilon = cms.untracked.vstring("HLT_Trimuon5_3p5_2_Upsilon_Muon_v"),
+        FiltersForUpsilon = cms.untracked.vstring("hltVertexmumuFilterUpsilonMuon"),
+ 
+        Chi2NDF_Track =  cms.untracked.double(15.0),
+        OniaDecayVtxProbCut = cms.untracked.double(0.01)
+)
 
-# Phi meson reconstruction from K+K-
-process.onia2MuMuPAT.addPhi = cms.bool(True)
-process.onia2MuMuPAT.phiMassMin = cms.double(0.99)  # GeV
-process.onia2MuMuPAT.phiMassMax = cms.double(1.06)  # GeV
-
-# Muon selection cuts
-process.onia2MuMuPAT.muonPtMin = cms.double(2.5)  # GeV
-process.onia2MuMuPAT.muonEtaMax = cms.double(2.4)
-
-# J/psi mass window
-process.onia2MuMuPAT.jPsiMassMin = cms.double(2.9)  # GeV
-process.onia2MuMuPAT.jPsiMassMax = cms.double(3.3)  # GeV
-
-# Upsilon mass window (1S, 2S, 3S region)
-process.onia2MuMuPAT.upsilonMassMin = cms.double(9.0)  # GeV
-process.onia2MuMuPAT.upsilonMassMax = cms.double(11.0)  # GeV
-
-# Kaon selection for phi reconstruction
-process.onia2MuMuPAT.kaonPtMin = cms.double(0.5)  # GeV
-process.onia2MuMuPAT.kaonEtaMax = cms.double(2.5)
-
-# MC matching (if running on MC)
-process.onia2MuMuPAT.isMC = cms.bool(runOnMC)
+if HIFormat:
+    process.mkcands.GenLabel = cms.InputTag('hiGenParticles')
+if UseGenPlusSim:
+    process.mkcands.GenLabel = cms.InputTag('genParticlePlusGEANT')
 
 # ==============================================================================
 # TFile Service for output
@@ -185,18 +193,8 @@ process.TFileService = cms.Service("TFileService",
 
 process.p = cms.Path(
     process.filter *
-    process.onia2MuMuPAT
+    process.mkcands
 )
 
 # Schedule
 process.schedule = cms.Schedule(process.p)
-
-# ==============================================================================
-# Customization for MC
-# ==============================================================================
-
-if runOnMC:
-    # Add MC truth matching
-    process.onia2MuMuPAT.addMCTruth = cms.bool(True)
-    process.onia2MuMuPAT.genParticles = cms.InputTag("prunedGenParticles")
-    process.onia2MuMuPAT.packedGenParticles = cms.InputTag("packedGenParticles")

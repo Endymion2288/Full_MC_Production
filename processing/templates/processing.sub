@@ -56,7 +56,7 @@ use_x509userproxy = true
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
 
 # Environment setup - use actual user ID for proxy path
-Environment = "HOME=/afs/cern.ch/user/x/xcheng X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
+Environment = "HOME=/srv X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
 
 # Retry configuration
 MaxRetries = 2

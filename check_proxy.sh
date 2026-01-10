@@ -69,7 +69,7 @@ init_proxy() {
     msg_info "Initializing new CMS VOMS proxy..."
     
     # Request 7-day proxy
-    voms-proxy-init -voms cms -valid 168:00
+    voms-proxy-init -voms cms -valid 192:00
     
     if [[ $? -eq 0 ]]; then
         msg_ok "New proxy initialized successfully"

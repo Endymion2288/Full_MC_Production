@@ -26,6 +26,7 @@ ivars.register('runOnMC',
                VarParsing.VarParsing.varType.bool,
                "Run on MC (True) or Data (False)")
 
+ivars.maxEvents = -1
 ivars.parseArguments()
 
 # Configuration flags

@@ -38,7 +38,10 @@ cleanup_on_exit() {
         rm -f "${WORKDIR}"/output_RAW.root 2>/dev/null || true
         rm -f "${WORKDIR}"/output_RECO.root 2>/dev/null || true
         rm -f "${WORKDIR}"/output_MINIAOD.root 2>/dev/null || true
+        rm -f "${WORKDIR}"/output_ntuple.root 2>/dev/null || true
         rm -f "${WORKDIR}"/ntuple_*.root 2>/dev/null || true
+        rm -f "${WORKDIR}"/.bash_history 2>/dev/null || true
+        rm -f "${WORKDIR}"/.viminfo 2>/dev/null || true
         rm -rf "${WORKDIR}"/CMSSW_14_0_18 2>/dev/null || true
         echo "[INFO] Cleanup done"
     fi
@@ -91,6 +94,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+
+# Avoid leaving shell history files
+export HISTFILE=/dev/null
+export HISTSIZE=0
+export HISTFILESIZE=0
 
 if [[ ! -d "${COMMON_DIR}" ]]; then
     echo "[ERROR] Common directory not found at ${COMMON_DIR}. Ensure common/ is transferred alongside run_chain.sh."
@@ -452,6 +460,11 @@ run_shower() {
         return 1
     fi
     
+    local shower_events=-1
+    if [[ "${MAX_EVENTS}" -gt 0 ]]; then
+        shower_events="${MAX_EVENTS}"
+    fi
+
     HEPMC_FILES=()
     
     setup_cmssw12
@@ -486,10 +499,10 @@ run_shower() {
         
         if [[ "$mode" == "phi" ]]; then
             # Phi-enriched shower: require phi pT > 3 GeV, muon pT > 2.5 GeV, |eta| < 2.4
-            ./shower_phi "${lhe_file}" "${hepmc_output}" -1 3.0 2.5 2.4 1000
+            ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 1000
         else
             # Standard shower: muon pT > 2.5 GeV, |eta| < 2.4
-            ./shower_normal "${lhe_file}" "${hepmc_output}" -1 2.5 2.4 1000
+            ./shower_normal "${lhe_file}" "${hepmc_output}" "${shower_events}" 2.5 2.4 1000
         fi
         
         if [[ ! -f "${hepmc_output}" ]]; then
@@ -801,7 +814,7 @@ MODES=""
 ANALYSIS_TYPE=""
 CAMPAIGN_NAME=""
 JOB_ID=""
-WORKDIR=$(pwd)
+WORKDIR=""
 CLEANUP="true"
 SKIP_TO=""
 STOP_AT=""
@@ -864,6 +877,12 @@ if [[ -z "$INPUTS" ]] || [[ -z "$MODES" ]] || [[ -z "$ANALYSIS_TYPE" ]] || [[ -z
     msg_error "Missing required arguments"
     usage
 fi
+
+# Default workdir inside the worker scratch to avoid writing to AFS
+if [[ -z "${WORKDIR}" ]]; then
+    WORKDIR="/srv/${CAMPAIGN_NAME}_${JOB_ID}"
+fi
+export HOME="${WORKDIR}"
 
 # Parse inputs and modes
 IFS=',' read -ra INPUT_SPECS <<< "$INPUTS"
