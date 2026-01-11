@@ -17,3 +17,4 @@ dagman.config
 __pycache__/
 *.pyc
 tmp/
+xcheng.cc

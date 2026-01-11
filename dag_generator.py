@@ -199,7 +199,8 @@ LHE_POOLS: Dict[str, LHEPool] = {
         name="pool_gg",
         process="g g > g g",
         description="gg -> gg (QCD dijet)",
-        min_pt_q=4.0
+        min_pt_q=4.0,
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_gg"
         # No eos_path - will be generated
     ),
     "pool_2jpsi_g": LHEPool(
@@ -207,7 +208,8 @@ LHE_POOLS: Dict[str, LHEPool] = {
         process="g g > cc~(3S11) cc~(3S11) g",
         description="gg -> 2J/psi + g (SPS for JJP)",
         min_pt_conia=6.0,
-        min_pt_q=4.0
+        min_pt_q=4.0,
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_2jpsi_g"
     ),
     "pool_jpsi_upsilon_g": LHEPool(
         name="pool_jpsi_upsilon_g",
@@ -215,7 +217,8 @@ LHE_POOLS: Dict[str, LHEPool] = {
         description="gg -> J/psi + Upsilon + g (SPS for JUP)",
         min_pt_conia=6.0,
         min_pt_bonia=4.0,
-        min_pt_q=4.0
+        min_pt_q=4.0,
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_jpsi_upsilon_g"
     ),
 }
 
