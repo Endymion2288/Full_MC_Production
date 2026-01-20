@@ -181,11 +181,39 @@ int main(int argc, char* argv[]) {
     
     // Initialize Pythia
     Pythia pythia;
+
+    auto setFlagIfExists = [&](const string& name, bool value) {
+        if (pythia.settings.isFlag(name)) {
+            pythia.readString(name + " = " + string(value ? "on" : "off"));
+        } else {
+            cerr << "[WARN] Pythia setting not found (flag): " << name << endl;
+        }
+    };
+    auto setModeIfExists = [&](const string& name, int value) {
+        if (pythia.settings.isMode(name)) {
+            pythia.readString(name + " = " + to_string(value));
+        } else {
+            cerr << "[WARN] Pythia setting not found (mode): " << name << endl;
+        }
+    };
+    auto setParmIfExists = [&](const string& name, double value) {
+        if (pythia.settings.isParm(name)) {
+            pythia.readString(name + " = " + to_string(value));
+        } else {
+            cerr << "[WARN] Pythia setting not found (parm): " << name << endl;
+        }
+    };
     
     // Basic settings
     pythia.readString("Beams:frameType = 4"); // Read from LHEF
     pythia.readString("Beams:LHEF = " + inputFile);
     pythia.readString("Beams:eCM = 13600."); // 13.6 TeV Run3
+
+    // Onia settings (guarded by availability in the installed Pythia version)
+    setParmIfExists("Onia:massSplit", 0.2);
+    setFlagIfExists("Onia:forceMassSplit", true);
+    setFlagIfExists("OniaShower:all", true);
+    setModeIfExists("OniaShower:octetSplit", 1);
     
     // Parton shower settings
     pythia.readString("PartonLevel:ISR = on");
@@ -195,23 +223,32 @@ int main(int argc, char* argv[]) {
     // Disable automatic hadronization for retry mechanism
     pythia.readString("HadronLevel:all = off");
     
-    // Color reconnection (CMS tune)
-    pythia.readString("ColourReconnection:reconnect = on");
-    pythia.readString("ColourReconnection:mode = 1");
-    pythia.readString("ColourReconnection:allowDoubleJunRem = off");
-    pythia.readString("ColourReconnection:m0 = 0.3");
-    pythia.readString("ColourReconnection:allowJunctions = on");
-    pythia.readString("ColourReconnection:junctionCorrection = 1.20");
-    pythia.readString("ColourReconnection:timeDilationMode = 2");
-    pythia.readString("ColourReconnection:timeDilationPar = 0.18");
-    
-    // CP5 tune
+    // Tune settings
     pythia.readString("Tune:pp = 14");
     pythia.readString("Tune:ee = 7");
-    pythia.readString("MultipartonInteractions:pT0Ref = 2.4024");
-    pythia.readString("MultipartonInteractions:ecmPow = 0.25208");
-    pythia.readString("MultipartonInteractions:expPow = 1.6");
-    
+    pythia.readString("MultipartonInteractions:ecmPow = 0.03344");
+    pythia.readString("MultipartonInteractions:bProfile = 2");
+    pythia.readString("MultipartonInteractions:pT0Ref = 1.41");
+    pythia.readString("MultipartonInteractions:coreRadius = 0.7634");
+    pythia.readString("MultipartonInteractions:coreFraction = 0.63");
+    pythia.readString("ColourReconnection:range = 5.176");
+    pythia.readString("SigmaTotal:zeroAXB = off");
+    pythia.readString("SpaceShower:alphaSorder = 2");
+    pythia.readString("SpaceShower:alphaSvalue = 0.118");
+    pythia.readString("SigmaProcess:alphaSvalue = 0.118");
+    pythia.readString("SigmaProcess:alphaSorder = 2");
+    pythia.readString("MultipartonInteractions:alphaSvalue = 0.118");
+    pythia.readString("MultipartonInteractions:alphaSorder = 2");
+    pythia.readString("TimeShower:alphaSorder = 2");
+    pythia.readString("TimeShower:alphaSvalue = 0.118");
+    pythia.readString("SigmaTotal:mode = 0");
+    pythia.readString("SigmaTotal:sigmaEl = 21.89");
+    pythia.readString("SigmaTotal:sigmaTot = 100.309");
+    pythia.readString("PDF:pSet = LHAPDF6:NNPDF31_nnlo_as_0118");
+
+    // Relax event checks for HELAC-Onia LHE color flow
+    // pythia.readString("Check:event = off");
+
     // Enhanced strange quark production for phi enrichment
     pythia.readString("StringFlav:probStoUD = 0.30");  // default 0.217
     pythia.readString("StringFlav:mesonUDvector = 0.60");  // enhance vector mesons

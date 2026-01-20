@@ -47,7 +47,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # T2_CN_Beijing XRootD storage paths
 EOS_HOST = "cceos.ihep.ac.cn"
-EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production"
+EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
 EOS_BASE = "root://{}/{}".format(EOS_HOST, EOS_PATH_BASE)
 
 # X509 proxy path for XRootD access
@@ -151,7 +151,7 @@ class LHEPool:
     """Definition of an LHE pool"""
     def __init__(self, name, process, description, 
                  output_pattern="sample_{name}_{seed}.lhe",
-                 min_pt_conia=6.0, min_pt_bonia=2.0, min_pt_q=4.0, 
+                 min_pt_conia=6.0, min_pt_bonia=4.0, min_pt_q=4.0, 
                  eos_path=None):
         self.name = name
         self.process = process
@@ -163,14 +163,27 @@ class LHEPool:
         self.eos_path = eos_path
 
 class Campaign:
-    """Definition of a physics campaign"""
-    def __init__(self, name, analysis_type, inputs, modes, description):
+    """Definition of a physics campaign
+    
+    Attributes:
+        name: Campaign identifier
+        analysis_type: JJP or JUP
+        inputs: List of LHE pool names
+        modes: List of shower modes (normal/phi) for each input
+        description: Human-readable description
+        deprecated: Whether this campaign is deprecated
+    """
+    def __init__(self, name, analysis_type, inputs, modes, description,
+                 deprecated=False):
         self.name = name
         self.analysis_type = analysis_type
         self.inputs = inputs
         self.modes = modes
         self.description = description
+        self.deprecated = deprecated
         self.n_sources = len(inputs)
+        
+        # Validate modes count matches inputs count
         if len(modes) != len(inputs):
             raise ValueError("Campaign {}: modes count must match inputs count".format(name))
 
@@ -179,46 +192,66 @@ class Campaign:
 # =============================================================================
 
 LHE_POOLS: Dict[str, LHEPool] = {
-    "pool_jpsi_g": LHEPool(
-        name="pool_jpsi_g",
-        process="g g > cc~(3S11) g",
-        description="gg -> J/psi + g (Color Singlet)",
+    # -------------------------------------------------------------------------
+    # CSCO Pools (Color Singlet + Color Octet combined)
+    # These are the PRIMARY pools recommended by workbook.md
+    # Using HELAC-Onia "define" syntax to include CS+CO contributions
+    # -------------------------------------------------------------------------
+    "pool_jpsi_CSCO_g": LHEPool(
+        name="pool_jpsi_CSCO_g",
+        process="define jpsi_all; g g > jpsi_all g",
+        description="gg -> J/psi(CS+CO) + g (3S11+3S18+1S08)",
         min_pt_conia=6.0,
         min_pt_q=4.0,
-        eos_path=f"{EOS_BASE}/lhe_pools/pool_jpsi_g"
+        # eos_path=None  # Will be generated
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_jpsi_CSCO_g"
     ),
-    "pool_upsilon_g": LHEPool(
-        name="pool_upsilon_g", 
-        process="g g > bb~(3S11) g",
-        description="gg -> Upsilon(1S) + g (Color Singlet)",
+    "pool_upsilon_CSCO_g": LHEPool(
+        name="pool_upsilon_CSCO_g", 
+        process="define upsilon_all; g g > upsilon_all g",
+        description="gg -> Upsilon(CS+CO) + g (3S11+3S18+1S08)",
         min_pt_bonia=4.0,
         min_pt_q=4.0,
-        eos_path=f"{EOS_BASE}/lhe_pools/pool_upsilon_g"
+        # eos_path=None  # Will be generated
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_upsilon_CSCO_g"
     ),
+    "pool_jpsi_upsilon_CSCO": LHEPool(
+        name="pool_jpsi_upsilon_CSCO",
+        process="g g > cc~(3S11) bb~(3S11)",
+        description="gg -> J/psi + Upsilon (Color Singlet)",
+        min_pt_conia=6.0,
+        min_pt_bonia=4.0,
+        # eos_path=None  # Will be generated
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_jpsi_upsilon_CSCO"
+    ),
+    
+    # -------------------------------------------------------------------------
+    # Basic Pools (Color Singlet only)
+    # -------------------------------------------------------------------------
     "pool_gg": LHEPool(
         name="pool_gg",
         process="g g > g g",
         description="gg -> gg (QCD dijet)",
         min_pt_q=4.0,
+        # eos_path=None  # Will be generated
         eos_path=f"{EOS_BASE}/lhe_pools/pool_gg"
-        # No eos_path - will be generated
+    ),
+    "pool_2jpsi": LHEPool(
+        name="pool_2jpsi",
+        process="g g > cc~(3S11) cc~(3S11)",
+        description="gg -> 2J/psi (Color Singlet, no extra gluon)",
+        min_pt_conia=6.0,
+        # eos_path=None  # Will be generated
+        eos_path=f"{EOS_BASE}/lhe_pools/pool_2jpsi"
     ),
     "pool_2jpsi_g": LHEPool(
         name="pool_2jpsi_g",
         process="g g > cc~(3S11) cc~(3S11) g",
-        description="gg -> 2J/psi + g (SPS for JJP)",
+        description="gg -> 2J/psi + g (Color Singlet SPS for JJP)",
         min_pt_conia=6.0,
         min_pt_q=4.0,
+        # eos_path=None  # Will be generated
         eos_path=f"{EOS_BASE}/lhe_pools/pool_2jpsi_g"
-    ),
-    "pool_jpsi_upsilon_g": LHEPool(
-        name="pool_jpsi_upsilon_g",
-        process="g g > cc~(3S11) bb~(3S11) g", 
-        description="gg -> J/psi + Upsilon + g (SPS for JUP)",
-        min_pt_conia=6.0,
-        min_pt_bonia=4.0,
-        min_pt_q=4.0,
-        eos_path=f"{EOS_BASE}/lhe_pools/pool_jpsi_upsilon_g"
     ),
 }
 
@@ -227,71 +260,94 @@ LHE_POOLS: Dict[str, LHEPool] = {
 # =============================================================================
 
 CAMPAIGNS: Dict[str, Campaign] = {
-    # JJP Campaigns
+    # =========================================================================
+    # JJP Campaigns (J/psi + J/psi + Phi)
+    # =========================================================================
+    
+    # JJP SPS: Single 2J/psi + g process with phi-enriched shower
     "JJP_SPS": Campaign(
         name="JJP_SPS",
         analysis_type="JJP",
         inputs=["pool_2jpsi_g"],
         modes=["phi"],
-        description="JJP SPS: gg->2J/psi+g with forced Phi shower"
+        description="JJP SPS: gg -> 2J/psi + g with forced Phi shower"
     ),
+    
+    # JJP DPS1: Two J/psi+g (CSCO) events mixed at HepMC level
     "JJP_DPS1": Campaign(
         name="JJP_DPS1",
         analysis_type="JJP",
-        inputs=["pool_jpsi_g", "pool_jpsi_g"],
+        inputs=["pool_jpsi_CSCO_g", "pool_jpsi_CSCO_g"],
         modes=["normal", "phi"],
-        description="JJP DPS Type-1: Two J/psi+g events mixed"
+        description="JJP DPS Type-1: Two J/psi(CS+CO)+g events mixed (normal + phi)"
     ),
+    
+    # JJP DPS2: 2J/psi (no extra g) mixed with gg->gg
     "JJP_DPS2": Campaign(
         name="JJP_DPS2",
         analysis_type="JJP",
-        inputs=["pool_2jpsi_g", "pool_gg"],
+        inputs=["pool_2jpsi", "pool_gg"],
         modes=["normal", "phi"],
-        description="JJP DPS Type-2: 2J/psi+g mixed with gg->gg"
+        description="JJP DPS Type-2: 2J/psi mixed with gg->gg (normal + phi)"
     ),
+    
+    # JJP TPS: Triple parton scattering
     "JJP_TPS": Campaign(
         name="JJP_TPS",
         analysis_type="JJP",
-        inputs=["pool_jpsi_g", "pool_jpsi_g", "pool_gg"],
+        inputs=["pool_jpsi_CSCO_g", "pool_jpsi_CSCO_g", "pool_gg"],
         modes=["normal", "normal", "phi"],
-        description="JJP TPS: Three parton scattering"
+        description="JJP TPS: Three parton scattering (normal + normal + phi)"
     ),
     
-    # JUP Campaigns
+    # =========================================================================
+    # JUP Campaigns (J/psi + Upsilon + Phi)
+    # =========================================================================
+    
+    # JUP SPS: DEPRECATED - marked per workbook.md
     "JUP_SPS": Campaign(
         name="JUP_SPS",
         analysis_type="JUP",
-        inputs=["pool_jpsi_upsilon_g"],
+        inputs=["pool_jpsi_upsilon_CSCO"],
         modes=["phi"],
-        description="JUP SPS: gg->J/psi+Upsilon+g with forced Phi shower"
+        description="[DEPRECATED] JUP SPS: J/psi + Upsilon with forced Phi shower",
+        deprecated=True
     ),
+    
+    # JUP DPS1: J/psi(phi) + Upsilon(normal)
     "JUP_DPS1": Campaign(
         name="JUP_DPS1",
         analysis_type="JUP",
-        inputs=["pool_jpsi_g", "pool_upsilon_g"],
+        inputs=["pool_jpsi_CSCO_g", "pool_upsilon_CSCO_g"],
         modes=["phi", "normal"],
-        description="JUP DPS Type-1: J/psi(phi) + Upsilon(normal)"
+        description="JUP DPS Type-1: J/psi(CS+CO)+g (phi) + Upsilon(CS+CO)+g (normal)"
     ),
+    
+    # JUP DPS2: J/psi(normal) + Upsilon(phi)
     "JUP_DPS2": Campaign(
         name="JUP_DPS2",
         analysis_type="JUP",
-        inputs=["pool_jpsi_g", "pool_upsilon_g"],
+        inputs=["pool_jpsi_CSCO_g", "pool_upsilon_CSCO_g"],
         modes=["normal", "phi"],
-        description="JUP DPS Type-2: J/psi(normal) + Upsilon(phi)"
+        description="JUP DPS Type-2: J/psi(CS+CO)+g (normal) + Upsilon(CS+CO)+g (phi)"
     ),
+    
+    # JUP DPS3: J/psi + Upsilon (CS) mixed with gg->gg
     "JUP_DPS3": Campaign(
         name="JUP_DPS3",
         analysis_type="JUP",
-        inputs=["pool_jpsi_upsilon_g", "pool_gg"],
+        inputs=["pool_jpsi_upsilon_CSCO", "pool_gg"],
         modes=["normal", "phi"],
-        description="JUP DPS Type-3: J/psi+Upsilon+g mixed with gg->gg"
+        description="JUP DPS Type-3: J/psi+Upsilon mixed with gg->gg (normal + phi)"
     ),
+    
+    # JUP TPS: Triple parton scattering
     "JUP_TPS": Campaign(
         name="JUP_TPS",
         analysis_type="JUP",
-        inputs=["pool_jpsi_g", "pool_upsilon_g", "pool_gg"],
+        inputs=["pool_jpsi_CSCO_g", "pool_upsilon_CSCO_g", "pool_gg"],
         modes=["normal", "normal", "phi"],
-        description="JUP TPS: Three parton scattering"
+        description="JUP TPS: Three parton scattering (normal + normal + phi)"
     ),
 }
 
@@ -342,7 +398,14 @@ class DAGGenerator:
     
     def add_processing_job(self, campaign: Campaign, job_id: int,
                            lhe_files: List[str], parent_jobs: List[str]) -> str:
-        """Add a processing job (shower -> mix -> sim -> ntuple) to DAG"""
+        """Add a processing job (shower -> mix -> sim -> ntuple) to DAG
+        
+        Args:
+            campaign: Campaign definition
+            job_id: Job index
+            lhe_files: List of LHE file specs (EOS:pool:id:usage or GEN:pool:idx)
+            parent_jobs: List of parent job names for dependencies
+        """
         job_name = f"PROC_{campaign.name}_{job_id}"
         
         # Build input arguments
@@ -374,6 +437,8 @@ class DAGGenerator:
         self.dag_lines.append(f"\n# ============================================")
         self.dag_lines.append(f"# Campaign: {campaign.name}")
         self.dag_lines.append(f"# Description: {campaign.description}")
+        if campaign.deprecated:
+            self.dag_lines.append(f"# *** DEPRECATED ***")
         self.dag_lines.append(f"# ============================================")
         
         processing_jobs = []
@@ -419,7 +484,9 @@ class DAGGenerator:
                     lhe_files.append(f"GEN:{pool_name}:{lhe_job_idx}")
                     parent_jobs.append(lhe_job_name)
                     
-            proc_job = self.add_processing_job(campaign, job_id, lhe_files, parent_jobs)
+            proc_job = self.add_processing_job(
+                campaign, job_id, lhe_files, parent_jobs
+            )
             processing_jobs.append(proc_job)
             
         return processing_jobs
@@ -515,7 +582,8 @@ def list_campaigns():
             if campaign.analysis_type == category:
                 inputs = " + ".join(campaign.inputs)
                 modes = "/".join(campaign.modes)
-                print(f"  {name:15} : {campaign.description}")
+                status = "[DEPRECATED] " if campaign.deprecated else ""
+                print(f"  {status}{name:15} : {campaign.description}")
                 print(f"                   Inputs: {inputs}")
                 print(f"                   Modes:  {modes}")
                 print()

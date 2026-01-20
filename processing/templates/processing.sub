@@ -5,12 +5,12 @@
 # Runs the full chain: Shower -> Mix -> GEN-SIM -> RAW -> RECO -> MiniAOD -> Ntuple
 #
 # Required variables (set via DAGMan VARS):
-#   campaign   - Campaign name (e.g., JJP_DPS1)
-#   job_id     - Job identifier
-#   inputs     - Comma-separated pool:index pairs
-#   modes      - Comma-separated shower modes (normal|phi)
-#   analysis   - Analysis type (JJP or JUP)
-#   n_sources  - Number of input sources
+#   campaign        - Campaign name (e.g., JJP_DPS1)
+#   job_id          - Job identifier
+#   inputs          - Comma-separated pool:index pairs
+#   modes           - Comma-separated shower modes (normal|phi)
+#   analysis        - Analysis type (JJP or JUP)
+#   n_sources       - Number of input sources
 # ==============================================================================
 
 Universe = vanilla

@@ -26,6 +26,9 @@ request_cpus = 4
 request_memory = 8GB
 request_disk = 5GB
 
+# Wall time limit for fast test (~100 events)
++MaxRuntime = 86400
+
 # Target T2_CN_Beijing site
 +DESIRED_Sites = "T2_CN_Beijing"
 

@@ -4,32 +4,52 @@
 A complete HTCondor DAGMan-based Monte Carlo production system for CMS physics analysis,
 covering the full chain from LHE generation to Ntuple production.
 
-**Target Site:** T2_CN_Beijing (IHEP)
-**Storage:** `root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production`
+**Target Site:** T2_CN_Beijing (IHEP)  
+**Storage:** `root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production_v2`
 
-## Quick Start - Before Submitting Jobs
+## Quick Start
 
-**IMPORTANT:** You must have a valid CMS VOMS proxy before submitting any jobs.
+### 1. Setup VOMS Proxy
 
 ```bash
-# 1. Setup CMS environment
+# Setup CMS environment
 source /cvmfs/cms.cern.ch/cmsset_default.sh
 
-# 2. Check and setup proxy (run this first!)
+# Initialize proxy (run this first!)
 ./check_proxy.sh --init
 
-# 3. This will:
-#    - Initialize a 7-day CMS VOMS proxy
-#    - Copy proxy to persistent AFS location for HTCondor jobs
-#    - Create required directories on T2_CN_Beijing storage
-#    - Test XRootD access
-
-# To just check status:
+# Check status
 ./check_proxy.sh --status
-
-# To test T2 access:
-./check_proxy.sh --test
 ```
+
+### 2. List Available Campaigns
+
+```bash
+python dag_generator.py --list-campaigns
+```
+
+### 3. Generate and Submit DAG
+
+```bash
+# Single campaign with 100 jobs
+python dag_generator.py --campaign JJP_DPS1 --jobs 100 --output jjp_dps1.dag
+
+# Submit
+mkdir -p log
+condor_submit_dag jjp_dps1.dag
+```
+
+### 4. Run Full Chain Test
+
+```bash
+# Quick test (shower + mix only)
+./test_full_chain.sh --quick
+
+# Full chain test (100 events)
+./test_full_chain.sh --campaign JJP_DPS1
+```
+
+---
 
 ## Overview
 
@@ -40,16 +60,18 @@ This system automates the production of simulated events for:
 Including SPS (Single Parton Scattering), DPS (Double Parton Scattering), 
 and TPS (Triple Parton Scattering) topologies.
 
+---
+
 ## Production Chain
 
 ```
-LHE Generation (HELAC-Onia)
+LHE Generation (HELAC-Onia with LDME parameters)
         ↓
 Parton Shower (Pythia8 - Normal or Phi-enriched)
         ↓
-Event Mixing (1/2/3 sources → DPS/TPS)
+Event Mixing (1/2/3 sources → SPS/DPS/TPS)
         ↓
-GEN-SIM (CMSSW)
+GEN-SIM (CMSSW_12)
         ↓
 RAW (DIGI + HLT + Pileup)
         ↓
@@ -57,195 +79,244 @@ RECO (Reconstruction)
         ↓
 MiniAOD
         ↓
-Ntuple (JJP or JUP analyzer)
+Ntuple (JJP or JUP analyzer, CMSSW_14)
 ```
+
+---
+
+## LHE Pool Definitions
+
+The system uses HELAC-Onia's `define` syntax to generate LHE files that include both 
+Color Singlet (CS) and Color Octet (CO) contributions in a single generation run.
+
+### CSCO Pools (Color Singlet + Color Octet Combined)
+
+| Pool Name | HELAC-Onia Command | Description |
+|-----------|-------------------|-------------|
+| `pool_jpsi_CSCO_g` | `define jpsi_all = cc~(3S11) cc~(3S18) cc~(1S08)` <br> `generate g g > jpsi_all g` | J/psi (CS+CO) + g |
+| `pool_upsilon_CSCO_g` | `define upsilon_all = bb~(3S11) bb~(3S18) bb~(1S08)` <br> `generate g g > upsilon_all g` | Υ (CS+CO) + g |
+| `pool_jpsi_upsilon_CSCO` | `generate g g > cc~(3S11) bb~(3S11)` | J/psi + Υ |
+
+### Basic Pools (Color Singlet Only)
+
+| Pool Name | HELAC-Onia Command | Description |
+|-----------|-------------------|-------------|
+| `pool_gg` | `g g > g g` | QCD dijet |
+| `pool_2jpsi` | `g g > cc~(3S11) cc~(3S11)` | Double J/psi |
+| `pool_2jpsi_g` | `g g > cc~(3S11) cc~(3S11) g` | Double J/psi + g |
+
+### LDME Parameters
+
+From H. Han et al, Phys. Rev. Lett. 114 (2015) 092005 and Phys. Rev. D 94 (2016) 014028:
+
+```
+# Charmonium
+LDMEcc3S11 = 1.16
+LDMEcc3S18 = 0.00902923
+LDMEcc1S08 = 0.0146
+
+# Bottomonium
+LDMEbb3S11 = 9.28
+LDMEbb3S18 = 0.0297426
+LDMEbb1S08 = 0.000170128
+```
+
+---
+
+## Campaign Definitions
+
+### JJP Campaigns (J/psi + J/psi + Phi)
+
+| Campaign | Input Pools | Shower Modes | Description |
+|----------|-------------|--------------|-------------|
+| **JJP_SPS** | `pool_2jpsi_g` | [phi] | Single 2J/psi+g with forced phi shower |
+| **JJP_DPS1** | `pool_jpsi_CSCO_g` × 2 | [normal, phi] | Two J/psi(CS+CO)+g events mixed |
+| **JJP_DPS2** | `pool_2jpsi` + `pool_gg` | [normal, phi] | 2J/psi + gg→gg mixed |
+| **JJP_TPS** | `pool_jpsi_CSCO_g` × 2 + `pool_gg` | [normal, normal, phi] | Triple parton scattering |
+
+### JUP Campaigns (J/psi + Upsilon + Phi)
+
+| Campaign | Input Pools | Shower Modes | Description |
+|----------|-------------|--------------|-------------|
+| **JUP_SPS** | `pool_jpsi_upsilon_CSCO` | [phi] | **[DEPRECATED]** |
+| **JUP_DPS1** | `pool_jpsi_CSCO_g` + `pool_upsilon_CSCO_g` | [phi, normal] | J/psi(phi) + Υ(normal) |
+| **JUP_DPS2** | `pool_jpsi_CSCO_g` + `pool_upsilon_CSCO_g` | [normal, phi] | J/psi(normal) + Υ(phi) |
+| **JUP_DPS3** | `pool_jpsi_upsilon_CSCO` + `pool_gg` | [normal, phi] | J/psi+Υ + gg→gg mixed |
+| **JUP_TPS** | `pool_jpsi_CSCO_g` + `pool_upsilon_CSCO_g` + `pool_gg` | [normal, normal, phi] | Triple parton scattering |
+
+---
 
 ## Directory Structure
 
 ```
-Full_MC_Production/
+T2_CN_Beijing/
 ├── dag_generator.py            # DAG generation script
+├── check_proxy.sh              # VOMS proxy management
+├── test_full_chain.sh          # Full chain test script
+├── README.md                   # This file
 ├── common/
 │   ├── setup.sh                # Environment setup
 │   ├── packages/               # Deployment packages
-│   │   ├── helac_package.tar.gz
-│   │   ├── jjp_code.tar.gz
-│   │   └── jup_code.tar.gz
+│   │   ├── helac_package.tar.gz    # HELAC-Onia sources
+│   │   ├── jjp_code.tar.gz         # JJP ntuple code
+│   │   └── jup_code.tar.gz         # JUP ntuple code
 │   └── cmssw_configs/          # CMSSW configuration files
 │       ├── hepmc_to_GENSIM.py
 │       ├── ntuple_jjp_cfg.py
 │       └── ntuple_jup_cfg.py
 ├── lhe_generation/             # LHE production module
-│   ├── run_helac.sh
+│   ├── run_helac.sh            # HELAC job script
 │   └── input_templates/
-│       └── user.inp
+│       └── user.inp            # HELAC physics cuts
 ├── processing/                 # Main processing module
 │   ├── run_chain.sh            # Universal production wrapper
 │   ├── pythia_shower/          # Shower programs
 │   │   ├── Makefile
-│   │   ├── shower_normal.cc
-│   │   ├── shower_phi.cc
+│   │   ├── shower_normal.cc    # Standard shower
+│   │   ├── shower_phi.cc       # Phi-enriched shower
 │   │   └── event_mixer_multisource.cc
 │   └── templates/              # HTCondor submit files
 │       ├── lhe_gen.sub
 │       ├── processing.sub
 │       └── summary.sub
 ├── log/                        # Job log files
-└── output/                     # Local output (if any)
+└── test_output/                # Test output directory
 ```
 
-## Quick Start
+---
 
-### 1. Prepare Packages
+## Preparing Packages
 
-First, create the required deployment packages. See `common/packages/README.md` for details.
+### 1. HELAC Package
 
 ```bash
-# Create HELAC package (source-only; built on worker)
-cd /afs/cern.ch/user/x/xcheng/condor/HELAC-on-HTCondor
-cp sources/HELAC-Onia-2.7.6.tar.gz .
-cp sources/hepmc2.06.11.tgz .
+cd /path/to/HELAC-on-HTCondor/sources
 tar -czf helac_package.tar.gz HELAC-Onia-2.7.6.tar.gz hepmc2.06.11.tgz
-cp helac_package.tar.gz /path/to/Full_MC_Production/common/packages/
-
-# Create JJP/JUP packages (built on worker)
-cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18/src/JJPNtupleMaker
-tar --exclude='.git' --exclude='*.root' -czf jjp_code.tar.gz TPS-Onia2MuMu/
-cp jjp_code.tar.gz /path/to/Full_MC_Production/common/packages/
-
-cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18/src/JUPNtupleMaker
-tar --exclude='.git' --exclude='*.root' -czf jup_code.tar.gz TPS-Onia2MuMu/
-cp jup_code.tar.gz /path/to/Full_MC_Production/common/packages/
+cp helac_package.tar.gz /path/to/T2_CN_Beijing/common/packages/
 ```
 
-### 2. List Available Campaigns
+### 2. JJP/JUP Analysis Packages
 
 ```bash
-cd /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production
-python dag_generator.py --list-campaigns
+# JJP package
+cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18/src
+tar --exclude='.git' --exclude='*.root' -czf jjp_code.tar.gz JJPNtupleMaker/
+cp jjp_code.tar.gz /path/to/T2_CN_Beijing/common/packages/
+
+# JUP package
+tar --exclude='.git' --exclude='*.root' -czf jup_code.tar.gz JUPNtupleMaker/
+cp jup_code.tar.gz /path/to/T2_CN_Beijing/common/packages/
 ```
 
-Available campaigns:
-- **JJP_SPS**: gg → 2J/psi + g (forced phi shower)
-- **JJP_DPS1**: J/psi+g × J/psi+g mixing (normal + phi)
-- **JJP_DPS2**: 2J/psi+g × gg mixing
-- **JJP_TPS**: Triple parton scattering
-- **JUP_SPS**: gg → J/psi + Υ + g
-- **JUP_DPS1-3**: Various DPS combinations
-- **JUP_TPS**: Triple parton scattering
+---
 
-### 3. Generate DAG
+## Usage Examples
+
+### Generate DAG for All JJP Campaigns
 
 ```bash
-# Single campaign with 100 jobs
-python dag_generator.py --campaign JJP_DPS1 --jobs 100 --output jjp_dps1.dag
-
-# All JJP campaigns with 50 jobs each
-python dag_generator.py --campaign JJP_ALL --jobs 50 --output jjp_all.dag
-
-# All campaigns
-python dag_generator.py --campaign ALL --jobs 20 --output full_production.dag
+python dag_generator.py --campaign JJP_ALL --jobs 1000 --output jjp_all.dag
 ```
 
-### 4. Submit DAG
+### Generate DAG for All Campaigns
 
 ```bash
-# Make sure log directory exists
-mkdir -p log
+python dag_generator.py --campaign ALL --jobs 500 --output full_production.dag
+```
 
-# Submit to HTCondor
-condor_submit_dag jjp_dps1.dag
+### Dry Run (Preview DAG Content)
 
-# Monitor progress
+```bash
+python dag_generator.py --campaign JJP_DPS1 --jobs 10 --dry-run
+```
+
+### Monitor Running DAG
+
+```bash
 condor_q
-tail -f jjp_dps1.dag.dagman.out
+tail -f my_production.dag.dagman.out
 ```
 
-## Campaign Physics
+---
 
-### JJP Campaigns (J/psi + J/psi + phi)
+## Testing
 
-| Campaign | Inputs | Shower Modes | Description |
-|----------|--------|--------------|-------------|
-| JJP_SPS | pool_2jpsi_g | phi | Single interaction producing 2 J/psi |
-| JJP_DPS1 | pool_jpsi_g × 2 | normal, phi | Two independent J/psi productions |
-| JJP_DPS2 | pool_2jpsi_g + pool_gg | normal, phi | 2 J/psi + gg dijet mixing |
-| JJP_TPS | pool_jpsi_g × 2 + pool_gg | normal, normal, phi | Three independent interactions |
+### Quick Test (Shower + Mix Only)
 
-### JUP Campaigns (J/psi + Upsilon + phi)
-
-| Campaign | Inputs | Shower Modes | Description |
-|----------|--------|--------------|-------------|
-| JUP_SPS | pool_jpsi_upsilon_g | phi | Single interaction |
-| JUP_DPS1 | pool_jpsi_g + pool_upsilon_g | phi, normal | J/psi (phi) + Υ (normal) |
-| JUP_DPS2 | pool_jpsi_g + pool_upsilon_g | normal, phi | J/psi (normal) + Υ (phi) |
-| JUP_DPS3 | pool_jpsi_upsilon_g + pool_gg | normal, phi | SPS + dijet mixing |
-| JUP_TPS | pool_jpsi_g + pool_upsilon_g + pool_gg | normal, normal, phi | Three interactions |
-
-## LHE Pools
-
-| Pool Name | Process | Status |
-|-----------|---------|--------|
-| pool_jpsi_g | gg → J/psi + g | ✓ Exists on EOS |
-| pool_gg | gg → gg | ✓ Exists on EOS |
-| pool_upsilon_g | gg → Υ(1S) + g | Generate on demand |
-| pool_2jpsi_g | gg → 2J/psi + g | Generate on demand |
-| pool_jpsi_upsilon_g | gg → J/psi + Υ + g | Generate on demand |
-
-## Output Location
-
-All outputs are stored on EOS:
-```
-/eos/user/x/xcheng/MC_Production/output/<campaign_name>/<job_id>/
-  ├── output_MINIAOD.root
-  └── output_ntuple.root
-```
-
-## Debugging
-
-### Check Job Status
 ```bash
-condor_q -dag
-condor_q -analyze <job_id>
+./test_full_chain.sh --quick --campaign JJP_DPS1
 ```
 
-### View Logs
+This will:
+1. Generate ~100 LHE events using HELAC-Onia (in el7 container)
+2. Run Pythia8 shower (normal + phi modes)
+3. Mix events using event_mixer_multisource
+
+### Full Chain Test
+
 ```bash
-# DAGMan log
-tail -f *.dag.dagman.out
-
-# Individual job logs
-cat log/proc_JJP_DPS1_0_*.stdout
-cat log/proc_JJP_DPS1_0_*.stderr
+./test_full_chain.sh --campaign JJP_DPS1
 ```
 
-### Rescue Failed Jobs
+This runs the complete chain including GEN-SIM, RAW, RECO, MiniAOD, and Ntuple steps.
+
+### Test Options
+
+| Option | Description |
+|--------|-------------|
+| `--quick` | Stop after shower+mix (skip CMSSW steps) |
+| `--skip-lhe` | Skip LHE generation (use existing file) |
+| `--campaign NAME` | Campaign to test (default: JJP_DPS1) |
+| `--clean` | Clean test directory before starting |
+
+---
+
+## Key Changes from Previous Version
+
+1. **Simplified LHE Generation**: Using HELAC-Onia's `define` syntax to include CS+CO contributions in single generation, eliminating the need for cross-section weighted mixing.
+
+2. **New Pool Naming**: `pool_jpsi_g` → `pool_jpsi_CSCO_g` to clearly indicate CS+CO content.
+
+3. **LDME Parameters**: Explicit LDME values from published references are now configured in run_helac.sh.
+
+4. **Removed xsec Mixing**: The `lhe_xsec_mixer` tool and related logic have been removed as they are no longer needed.
+
+5. **Storage Path**: Updated to `MC_Production_v2` for clean separation from previous production.
+
+---
+
+## Troubleshooting
+
+### Proxy Issues
+
 ```bash
-# If DAG fails, a rescue DAG is created
-condor_submit_dag *.dag.rescue001
+# Check proxy validity
+./check_proxy.sh --status
+
+# Reinitialize proxy
+./check_proxy.sh --init
+
+# Test XRootD access
+./check_proxy.sh --test
 ```
 
-### Test Single Step
+### HELAC Build Failures
+
+HELAC-Onia requires the el7 container:
 ```bash
-# Test shower locally
-cd processing/pythia_shower
-source /cvmfs/cms.cern.ch/cmsset_default.sh
-cd /path/to/CMSSW_12_4_14_patch3/src && cmsenv && cd -
-make
-./shower_phi test.lhe output.hepmc 100
+apptainer exec /cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64 /bin/bash
 ```
 
-## Dependencies
+### Missing Packages
 
-- **CMSSW_12_4_14_patch3**: GEN-SIM chain, Pythia8 shower
-- **CMSSW_14_0_18**: Ntuple production (JJP/JUP analyzers)
-- **HELAC-Onia 2.7.6**: LHE generation
-- **HTCondor**: Job scheduling
-- **CVMFS**: CMS software distribution
+Ensure all required packages exist:
+```bash
+ls -la common/packages/
+# Should show: helac_package.tar.gz, jjp_code.tar.gz, jup_code.tar.gz
+```
+
+---
 
 ## Contact
 
-For questions or issues, contact the MC production team or refer to:
-- [HELAC-Onia documentation](http://helac-phegas.web.cern.ch/helac-phegas/)
-- [CMSSW workbook](https://twiki.cern.ch/twiki/bin/view/CMSPublic/WorkBook)
-- [HTCondor DAGMan manual](https://htcondor.readthedocs.io/en/latest/users-manual/dagman-workflows.html)
+For issues or questions, check the job logs in `log/` directory or the DAGMan output file.

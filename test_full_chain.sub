@@ -1,0 +1,58 @@
+# ==============================================================================
+# test_full_chain.sub - HTCondor submit file for full chain test
+# ============================================================================== 
+# This submit file runs test_full_chain.sh on T2_CN_Beijing.
+# Customize $(campaign) and $(extra_args) in the Queue block.
+# ============================================================================== 
+
+Universe = vanilla
+Initialdir = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing
+
+Executable = test_full_chain.sh
+transfer_executable = True
+Arguments = --campaign $(campaign) $(extra_args)
+
+# Transfer input files (self-contained sandbox)
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/test_full_chain.sh, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common, \
+                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/lhe_generation
+
+# Output handling (stage-out via XRootD inside the script)
+transfer_output_files =
+
+# Log files
+Output = log/test_full_chain_$(campaign)_$(Cluster)_$(Process).stdout
+Error = log/test_full_chain_$(campaign)_$(Cluster)_$(Process).stderr
+Log = log/test_full_chain_$(campaign)_$(Cluster)_$(Process).log
+
+# Resource requirements
+request_cpus = 4
+request_memory = 24GB
+request_disk = 40GB
+
+# Target T2_CN_Beijing site
++DESIRED_Sites = "T2_CN_Beijing"
++MaxRuntime = 172800
+
+# X509 proxy for XRootD storage access
+x509userproxy = /afs/cern.ch/user/x/xcheng/x509up_u180107
+use_x509userproxy = true
+
+# Run in CMSSW-compatible container (el8 for CMSSW_12/14 compatibility)
++SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
+
+# Environment setup
+Environment = "HOME=/srv X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
+
+# Retry configuration
+MaxRetries = 1
+OnExitHold = (ExitCode != 0)
+OnExitHoldReason = "Job exited with non-zero status"
+
+# Default queue (edit as needed)
+campaign = JUP_DPS3
+extra_args =
+Queue 1

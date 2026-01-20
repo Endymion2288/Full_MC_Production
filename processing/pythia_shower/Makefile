@@ -12,9 +12,9 @@
 #   make mixer      # Build event mixer only
 #   make clean      # Remove built files
 
-# Compiler settings
-CXX = g++
-CXXFLAGS = -std=c++17 -O2 -Wall
+# Compiler settings (allow environment override)
+CXX ?= g++
+CXXFLAGS ?= -std=c++17 -O2 -Wall
 
 # Fixed paths on CVMFS for el8_amd64_gcc10 (CMSSW_12_4_14_patch3)
 # These are stable paths that work inside Singularity containers

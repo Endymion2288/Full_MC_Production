@@ -20,7 +20,7 @@ POOL_NAME=""
 MY_SEED=100
 PROCESS_STRING=""
 MIN_PT_CONIA=6.0
-MIN_PT_BONIA=2.0
+MIN_PT_BONIA=4.0
 MIN_PT_Q=4.0
 WORKDIR=$(pwd)
 OUTPUT_DIR=""
@@ -31,7 +31,7 @@ OUTPUT_DIR=""
 # NOPT=20000000
 # NOPT_STEP=20000000
 # NOPT_LIM=200000000
-PREUNW=30000
+PREUNW=300000
 UNWEVT=10000000
 NMC=2000000
 NOPT=2000000
@@ -45,7 +45,7 @@ HEPMC_PREFIX="${WORKDIR}/HepMC/HepMC-2.06.11"
 
 # T2_CN_Beijing XRootD storage paths
 EOS_HOST="cceos.ihep.ac.cn"
-EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production"
+EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
 
 # ----------------------------------------------------------------------------
 # Helper functions
@@ -165,23 +165,44 @@ fi
 # Set default process string based on pool name if not specified
 if [ -z "$PROCESS_STRING" ]; then
     case "$POOL_NAME" in
-        "pool_jpsi_g")
-            PROCESS_STRING="g g > cc~(3S11) g"
+        # =====================================================================
+        # CSCO Pools (Color Singlet + Color Octet combined using define)
+        # These are the PRIMARY pools recommended by workbook.md
+        # =====================================================================
+        "pool_jpsi_CSCO_g")
+            # J/psi (CS+CO) + g using define syntax
+            PROCESS_STRING="define jpsi_all = cc~(3S11) cc~(3S18) cc~(1S08)
+generate g g > jpsi_all g"
             ;;
-        "pool_upsilon_g")
-            PROCESS_STRING="g g > bb~(3S11) g"
+        "pool_upsilon_CSCO_g")
+            # Upsilon (CS+CO) + g using define syntax
+            PROCESS_STRING="define upsilon_all = bb~(3S11) bb~(3S18) bb~(1S08)
+generate g g > upsilon_all g"
             ;;
+        "pool_jpsi_upsilon_CSCO")
+            # J/psi + Upsilon (CS only for now, as per workbook)
+            PROCESS_STRING="generate g g > jpsi y(1s)"
+            ;;
+            
+        # =====================================================================
+        # Basic Single/Double Onia Pools (Color Singlet only)
+        # =====================================================================
         "pool_gg")
             PROCESS_STRING="g g > g g"
+            ;;
+        "pool_2jpsi")
+            PROCESS_STRING="g g > cc~(3S11) cc~(3S11)"
             ;;
         "pool_2jpsi_g")
             PROCESS_STRING="g g > cc~(3S11) cc~(3S11) g"
             ;;
-        "pool_jpsi_upsilon_g")
-            PROCESS_STRING="g g > cc~(3S11) bb~(3S11) g"
-            ;;
+            
         *)
             echo "Error: Unknown pool name and no process string specified"
+            echo "Available pools (CSCO - recommended):"
+            echo "  - pool_jpsi_CSCO_g, pool_upsilon_CSCO_g, pool_jpsi_upsilon_CSCO"
+            echo "Available pools (basic):"
+            echo "  - pool_gg, pool_2jpsi, pool_2jpsi_g"
             exit 1
             ;;
     esac
@@ -264,10 +285,19 @@ ensure_helac
 # Enter HELAC directory
 cd HELAC-Onia-2.7.6
 
-# Create run configuration
+# Create run configuration with LDME parameters
+# LDME values from:
+# - H. Han et al, Phys. Rev. Lett. 114 (2015) 092005, [arXiv:1411.7350]
+# - H. Han et al, Phys. Rev. D 94 (2016) 014028, [arXiv:1410.8537]
 cat > run_config.ho << EOF
 set cmass = 1.54845d0
 set bmass = 4.73020d0
+set LDMEcc3S11 = 1.16d0
+set LDMEcc3S18 = 0.00902923d0
+set LDMEcc1S08 = 0.0146d0
+set LDMEbb3S11 = 9.28d0
+set LDMEbb3S18 = 0.0297426d0
+set LDMEbb1S08 = 0.000170128d0
 set preunw = ${PREUNW}
 set unwevt = ${UNWEVT}
 set nmc = ${NMC}
@@ -281,7 +311,7 @@ set minptbonia = ${MIN_PT_BONIA}d0
 set maxrapconia = 2.4
 set minptq = ${MIN_PT_Q}
 set ranhel = 4
-generate ${PROCESS_STRING}
+${PROCESS_STRING}
 launch
 exit
 EOF
@@ -303,8 +333,12 @@ if [ -z "$RUN_DIR" ]; then
     exit 1
 fi
 
-# Find the LHE file
-LHE_FILE=$(find . -name "*.lhe" -type f | head -1)
+# Find the LHE file from the latest run directory
+if [[ -n "${RUN_DIR}" ]] && [[ -d "${RUN_DIR}/results" ]]; then
+    LHE_FILE=$(find "${RUN_DIR}/results" -name "*.lhe" -type f | head -1)
+else
+    LHE_FILE=$(find . -path "./PROC_HO_*/results/*.lhe" -type f | sort | tail -1)
+fi
 
 if [ -z "$LHE_FILE" ] || [ ! -f "$LHE_FILE" ]; then
     echo "Error: LHE file not found"
@@ -312,6 +346,72 @@ if [ -z "$LHE_FILE" ] || [ ! -f "$LHE_FILE" ]; then
 fi
 
 echo "Found LHE file: $LHE_FILE"
+
+# Replace color-octet PDG codes (9900000+PDG or 9900+PDG) with new 99nqnsnrnLnJ encoding
+echo "Updating color-octet PDG codes in LHE file..."
+LHE_PATH="${LHE_FILE}" python3 - << 'PY'
+import os
+import re
+from pathlib import Path
+
+lhe_path = Path(os.environ["LHE_PATH"])
+text = lhe_path.read_text()
+
+def _target_from_helac(helac_pdg: int):
+    if helac_pdg in (441, 443, 445):
+        nq = 4
+        if helac_pdg == 441:
+            ns, target = 1, 443
+        elif helac_pdg == 443:
+            ns, target = 0, 443
+        else:
+            ns, target = 2, 443
+        return nq, ns, target
+    if helac_pdg in (551, 553, 555):
+        nq = 5
+        if helac_pdg == 551:
+            ns, target = 1, 553
+        elif helac_pdg == 553:
+            ns, target = 0, 553
+        else:
+            ns, target = 2, 553
+        return nq, ns, target
+    return None
+
+def _singlet_LJ(target_pdg: int):
+    base = target_pdg % 1000
+    if base in (443, 553):
+        return 0, 1
+    if base in (441, 551):
+        return 0, 0
+    if base in (445, 555):
+        return 1, 2
+    return None
+
+def convert_octet_code(val: int):
+    if not str(val).startswith("9900"):
+        return None
+    helac_pdg = val - 9900000 if val >= 9900000 else val - 9900
+    mapping = _target_from_helac(helac_pdg)
+    if mapping is None:
+        return None
+    nq, ns, target = mapping
+    nr = target // 100000
+    lj = _singlet_LJ(target)
+    if lj is None:
+        return None
+    nL, J = lj
+    nJ = 2 * J + 1
+    return int(f"99{nq}{ns}{nr}{nL}{nJ}")
+
+def replace_match(m):
+    val = int(m.group(0))
+    new_code = convert_octet_code(val)
+    return str(new_code) if new_code is not None else m.group(0)
+
+new_text = re.sub(r"\b\d+\b", replace_match, text)
+lhe_path.write_text(new_text)
+PY
 
 # Create remote directory and copy to T2_CN_Beijing storage via XRootD
 echo "Creating remote directory on T2_CN_Beijing..."
