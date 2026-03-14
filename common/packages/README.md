@@ -105,7 +105,7 @@ Expected sizes (approx):
 
 2. **CMSSW Version Compatibility**: 
    - JJP/JUP codes are designed for CMSSW_14_0_18
-   - GEN-SIM chain uses CMSSW_12_4_14_patch3
+   - GEN-SIM chain uses CMSSW_12_4_14
 
 3. **Updating Packages**: When you update the analysis code, remember to rebuild
    the corresponding tar.gz file and test on a worker node before large-scale submission.

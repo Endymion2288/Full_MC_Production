@@ -1,19 +1,18 @@
 #!/bin/bash
 # ==============================================================================
-# run_helac.sh - HELAC-Onia LHE generation script
+# run_helac.sh - HELAC-Onia LHE 生成脚本
 # ==============================================================================
-# This script runs HELAC-Onia to generate LHE files for various physics processes.
-# It is designed to run on HTCondor worker nodes within a cmssw-el7 container.
-#
-# Usage:
-#   ./run_helac.sh --pool <pool_name> --seed <seed> [--process <process_string>]
-#
-# Examples:
-#   ./run_helac.sh --pool pool_jpsi_g --seed 100
-#   ./run_helac.sh --pool pool_gg --seed 200 --process "g g > g g"
+# 主要约束：
+# 1. 运行于 HTCondor worker 节点，依赖打包传入的 helac_package.tar.gz。
+# 2. 物理配置以 workbook_v2.md 为准，默认使用更新后的 LDME 参数。
+# 3. 支持 test-mode，把积分与非加权事件数压到小批量验证可接受的范围。
 # ==============================================================================
 
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+OCTET_PDG_TOOL="${BASE_DIR}/common/octet_pdg.py"
 
 # Default values
 POOL_NAME=""
@@ -38,6 +37,7 @@ NOPT=2000000
 NOPT_STEP=2000000
 NOPT_LIM=20000000
 FAST_TEST=0
+TEST_MODE="false"
 # Build locations (populated after unpacking helac_package.tar.gz)
 HEPMC_SRC_TGZ=""
 HELAC_SRC_TAR=""
@@ -45,6 +45,7 @@ HEPMC_PREFIX="${WORKDIR}/HepMC/HepMC-2.06.11"
 
 # T2_CN_Beijing XRootD storage paths
 EOS_HOST="cceos.ihep.ac.cn"
+EOS_XRDFS_TARGET="root://${EOS_HOST}"
 EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
 
 # ----------------------------------------------------------------------------
@@ -53,10 +54,29 @@ EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
 
 setup_build_env() {
     # Minimal environment for building HepMC/HELAC inside the worker node
+    if ! command -v python >/dev/null 2>&1; then
+        if command -v python3 >/dev/null 2>&1; then
+            mkdir -p "${WORKDIR}/.local/bin"
+            cat > "${WORKDIR}/.local/bin/python" << 'PYWRAP'
+#!/bin/bash
+exec python3 "$@"
+PYWRAP
+            chmod +x "${WORKDIR}/.local/bin/python"
+            export PATH="${WORKDIR}/.local/bin:$PATH"
+        elif [ -x "/cvmfs/sft.cern.ch/lcg/releases/Python/2.7.13-597a5/x86_64-centos7-gcc62-opt/bin/python" ]; then
+            export PATH="/cvmfs/sft.cern.ch/lcg/releases/Python/2.7.13-597a5/x86_64-centos7-gcc62-opt/bin:$PATH"
+        fi
+    fi
     source /cvmfs/cms.cern.ch/cmsset_default.sh
     source /cvmfs/sft.cern.ch/lcg/views/LCG_88b/x86_64-centos7-gcc62-opt/setup.sh
     export LD_LIBRARY_PATH=/cvmfs/sft.cern.ch/lcg/releases/LCG_88b/Boost/1.62.0/x86_64-centos7-gcc62-opt/lib:$LD_LIBRARY_PATH
-    export LD_LIBRARY_PATH=/cvmfs/sft.cern.ch/lcg/contrib/gcc/6.2.0/x86_64-centos7-gcc62-opt/lib64:$LD_LIBRARY_PATH
+    export LD_LIBRARY_PATH=/cvmfs/sft.cern.ch/lcg/contrib/gcc/6.2.0/x86_64-centos7-gcc62-opt/lib64:/opt/rh/gcc-toolset-12/root/usr/lib64:$LD_LIBRARY_PATH
+    export LD_LIBRARY_PATH=/cvmfs/sft.cern.ch/lcg/releases/LCG_88b/Boost/1.62.0/x86_64-centos7-gcc62-opt/lib:$LD_LIBRARY_PATH
+    export PATH=/cvmfs/sft.cern.ch/lcg/contrib/gcc/6.2.0/x86_64-centos7-gcc62-opt/bin:/opt/rh/gcc-toolset-12/root/usr/bin:$PATH
+    # 某些 el7 worker 不提供 C.UTF-8 locale，统一退回 C，避免构建阶段刷屏警告。
+    export LANG=${LANG:-C}
+    export LC_ALL=${LC_ALL:-C}
+    unset PYTHONHOME PYTHONPATH
 }
 
 ensure_hepmc() {
@@ -110,6 +130,97 @@ ensure_helac() {
     cd "${WORKDIR}"
 }
 
+write_py8_onia_config() {
+    local pool_name="$1"
+    local output_file="$2"
+
+    case "$pool_name" in
+        "pool_2jpsi"|"pool_2jpsi_cs"|"pool_2jpsi_g")
+            cat > "${output_file}" << 'EOF'
+2
+443 443
+EOF
+            ;;
+        "pool_jpsi_CSCO_g")
+            cat > "${output_file}" << 'EOF'
+1
+443
+EOF
+            ;;
+        "pool_upsilon_CSCO_g")
+            cat > "${output_file}" << 'EOF'
+1
+553
+EOF
+            ;;
+        "pool_jpsi_upsilon_CSCO")
+            cat > "${output_file}" << 'EOF'
+2
+443 553
+EOF
+            ;;
+        "pool_gg")
+            cat > "${output_file}" << 'EOF'
+0
+EOF
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+compiler_supports_flag() {
+    local flag="$1"
+    local test_src="${WORKDIR}/.gfortran_flag_check.f"
+    local test_obj="${WORKDIR}/.gfortran_flag_check.o"
+
+    cat > "${test_src}" << 'EOF'
+      end
+EOF
+
+    if gfortran "${flag}" -c "${test_src}" -o "${test_obj}" >/dev/null 2>&1; then
+        rm -f "${test_src}" "${test_obj}"
+        return 0
+    fi
+
+    rm -f "${test_src}" "${test_obj}"
+    return 1
+}
+
+build_lhe_converter_if_needed() {
+    if [[ -x "${WORKDIR}/lhe_pythia6_pythia8" ]]; then
+        return 0
+    fi
+    if [[ ! -f "${WORKDIR}/lhe_pythia6_pythia8.f" ]]; then
+        return 1
+    fi
+
+    local build_flags=("-O2")
+    if compiler_supports_flag "-fallow-argument-mismatch"; then
+        build_flags+=("-fallow-argument-mismatch")
+    else
+        echo "[WARN] 当前 gfortran 不支持 -fallow-argument-mismatch，改用兼容编译参数"
+    fi
+
+    echo "[INFO] Building lhe_pythia6_pythia8 converter..."
+    gfortran "${build_flags[@]}" -o "${WORKDIR}/lhe_pythia6_pythia8" "${WORKDIR}/lhe_pythia6_pythia8.f"
+}
+
+verify_lhe_octet_codes() {
+    local lhe_file="$1"
+    if [[ ! -f "${lhe_file}" ]]; then
+        echo "[ERROR] LHE file not found for octet verification: ${lhe_file}"
+        return 1
+    fi
+    if [[ ! -f "${OCTET_PDG_TOOL}" ]]; then
+        echo "[ERROR] Octet PDG tool not found: ${OCTET_PDG_TOOL}"
+        return 1
+    fi
+
+    PYTHONIOENCODING=UTF-8 python3 "${OCTET_PDG_TOOL}" scan "${lhe_file}" --fail-on-legacy
+}
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -149,6 +260,10 @@ while [[ $# -gt 0 ]]; do
             FAST_TEST=1
             shift 1
             ;;
+        --test-mode)
+            TEST_MODE="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -171,12 +286,12 @@ if [ -z "$PROCESS_STRING" ]; then
         # =====================================================================
         "pool_jpsi_CSCO_g")
             # J/psi (CS+CO) + g using define syntax
-            PROCESS_STRING="define jpsi_all = cc~(3S11) cc~(3S18) cc~(1S08)
+            PROCESS_STRING="define jpsi_all = cc~(3S11) cc~(3S18) cc~(1S08) cc~(3PJ8)
 generate g g > jpsi_all g"
             ;;
         "pool_upsilon_CSCO_g")
             # Upsilon (CS+CO) + g using define syntax
-            PROCESS_STRING="define upsilon_all = bb~(3S11) bb~(3S18) bb~(1S08)
+            PROCESS_STRING="define upsilon_all = bb~(3S11) bb~(3S18) bb~(1S08) bb~(3PJ8)
 generate g g > upsilon_all g"
             ;;
         "pool_jpsi_upsilon_CSCO")
@@ -188,13 +303,13 @@ generate g g > upsilon_all g"
         # Basic Single/Double Onia Pools (Color Singlet only)
         # =====================================================================
         "pool_gg")
-            PROCESS_STRING="g g > g g"
+            PROCESS_STRING="generate g g > g g"
             ;;
-        "pool_2jpsi")
-            PROCESS_STRING="g g > cc~(3S11) cc~(3S11)"
+        "pool_2jpsi"|"pool_2jpsi_cs")
+            PROCESS_STRING="generate g g > cc~(3S11) cc~(3S11)"
             ;;
         "pool_2jpsi_g")
-            PROCESS_STRING="g g > cc~(3S11) cc~(3S11) g"
+            PROCESS_STRING="generate g g > cc~(3S11) cc~(3S11) g"
             ;;
             
         *)
@@ -202,7 +317,7 @@ generate g g > upsilon_all g"
             echo "Available pools (CSCO - recommended):"
             echo "  - pool_jpsi_CSCO_g, pool_upsilon_CSCO_g, pool_jpsi_upsilon_CSCO"
             echo "Available pools (basic):"
-            echo "  - pool_gg, pool_2jpsi, pool_2jpsi_g"
+            echo "  - pool_gg, pool_2jpsi, pool_2jpsi_cs, pool_2jpsi_g"
             exit 1
             ;;
     esac
@@ -225,6 +340,10 @@ if [ "$MY_SEED" -le 10 ] || [ "$MY_SEED" -ge 100000 ]; then
 fi
 
 # Apply fast-test presets (drastically fewer integration/event counts)
+if [ "$TEST_MODE" = "true" ]; then
+    FAST_TEST=1
+fi
+
 if [ "$FAST_TEST" -eq 1 ]; then
     PREUNW=3000
     UNWEVT=100
@@ -287,17 +406,22 @@ cd HELAC-Onia-2.7.6
 
 # Create run configuration with LDME parameters
 # LDME values from:
-# - H. Han et al, Phys. Rev. Lett. 114 (2015) 092005, [arXiv:1411.7350]
-# - H. Han et al, Phys. Rev. D 94 (2016) 014028, [arXiv:1410.8537]
+# - workbook_v2.md 中给出的 Helac-Onia 格式换算值
 cat > run_config.ho << EOF
 set cmass = 1.54845d0
 set bmass = 4.73020d0
-set LDMEcc3S11 = 1.16d0
-set LDMEcc3S18 = 0.00902923d0
-set LDMEcc1S08 = 0.0146d0
-set LDMEbb3S11 = 9.28d0
-set LDMEbb3S18 = 0.0297426d0
-set LDMEbb1S08 = 0.000170128d0
+set LDMEcc1S08 = 0.0023125d0
+set LDMEcc3S18 = 0.0003528845833333333d0
+set LDMEcc3P08 = 0.0040024d0
+set LDMEcc3P18 = 0.004002404166666667d0
+set LDMEcc3P28 = 0.0040024d0
+set LDMEcc3S11 = 0.06444444444444444d0
+set LDMEbb1S08 = 0.000021266d0
+set LDMEbb3S18 = 0.001239275d0
+set LDMEbb3P08 = 0.10807425d0
+set LDMEbb3P18 = 0.1080741666666667d0
+set LDMEbb3P28 = 0.10807425d0
+set LDMEbb3S11 = 0.5155555555555555d0
 set preunw = ${PREUNW}
 set unwevt = ${UNWEVT}
 set nmc = ${NMC}
@@ -305,7 +429,6 @@ set nopt = ${NOPT}
 set nopt_step = ${NOPT_STEP}
 set noptlim = ${NOPT_LIM}
 set seed = ${MY_SEED}
-set parton_shower = 0
 set minptconia = ${MIN_PT_CONIA}d0
 set minptbonia = ${MIN_PT_BONIA}d0
 set maxrapconia = 2.4
@@ -335,98 +458,71 @@ fi
 
 # Find the LHE file from the latest run directory
 if [[ -n "${RUN_DIR}" ]] && [[ -d "${RUN_DIR}/results" ]]; then
-    LHE_FILE=$(find "${RUN_DIR}/results" -name "*.lhe" -type f | head -1)
+    RAW_LHE_FILE=$(find "${RUN_DIR}/results" -name "*.lhe" -type f ! -name "*_py8.lhe" | head -1)
+    PY8_LHE_FILE=$(find "${RUN_DIR}/results" -name "*_py8.lhe" -type f | head -1)
 else
-    LHE_FILE=$(find . -path "./PROC_HO_*/results/*.lhe" -type f | sort | tail -1)
+    RAW_LHE_FILE=$(find . -path "./PROC_HO_*/results/*.lhe" -type f ! -name "*_py8.lhe" | sort | tail -1)
+    PY8_LHE_FILE=$(find . -path "./PROC_HO_*/results/*_py8.lhe" -type f | sort | tail -1)
 fi
 
-if [ -z "$LHE_FILE" ] || [ ! -f "$LHE_FILE" ]; then
+if [[ -n "${RAW_LHE_FILE}" && -f "${RAW_LHE_FILE}" ]]; then
+    LHE_FILE="${RAW_LHE_FILE}"
+elif [[ -n "${PY8_LHE_FILE}" && -f "${PY8_LHE_FILE}" ]]; then
+    LHE_FILE="${PY8_LHE_FILE}"
+else
     echo "Error: LHE file not found"
     exit 1
 fi
 
 echo "Found LHE file: $LHE_FILE"
 
-# Replace color-octet PDG codes (9900000+PDG or 9900+PDG) with new 99nqnsnrnLnJ encoding
-echo "Updating color-octet PDG codes in LHE file..."
-LHE_PATH="${LHE_FILE}" python3 - << 'PY'
-import os
-import re
-from pathlib import Path
+# workbook_v2 要求在 LHE 生成后单独调用 converter 完成 PDG 转换。
+FINAL_LHE_FILE="${LHE_FILE}"
+PY8_ONIA_CONFIG="${WORKDIR}/py8_onia_user.inp"
+CONVERTED_LHE_FILE="${WORKDIR}/sample_${POOL_NAME}_${MY_SEED}_converted.lhe"
 
-lhe_path = Path(os.environ["LHE_PATH"])
-text = lhe_path.read_text()
+if write_py8_onia_config "${POOL_NAME}" "${PY8_ONIA_CONFIG}" && build_lhe_converter_if_needed; then
+    echo "[INFO] Running lhe_pythia6_pythia8 converter..."
+    if "${WORKDIR}/lhe_pythia6_pythia8" "${LHE_FILE}" "${PY8_ONIA_CONFIG}" "${CONVERTED_LHE_FILE}"; then
+        if [[ -f "${CONVERTED_LHE_FILE}" ]]; then
+            FINAL_LHE_FILE="${CONVERTED_LHE_FILE}"
+            echo "[INFO] Converted LHE ready: ${FINAL_LHE_FILE}"
+        fi
+    else
+        echo "[WARN] LHE converter failed, fallback to original LHE"
+    fi
+elif [[ -n "${PY8_LHE_FILE}" && -f "${PY8_LHE_FILE}" ]]; then
+    FINAL_LHE_FILE="${PY8_LHE_FILE}"
+    echo "[INFO] Reusing HELAC generated *_py8.lhe: ${FINAL_LHE_FILE}"
+else
+    echo "[WARN] No standalone converter available, fallback to original LHE"
+fi
 
-def _target_from_helac(helac_pdg: int):
-    if helac_pdg in (441, 443, 445):
-        nq = 4
-        if helac_pdg == 441:
-            ns, target = 1, 443
-        elif helac_pdg == 443:
-            ns, target = 0, 443
-        else:
-            ns, target = 2, 443
-        return nq, ns, target
-    if helac_pdg in (551, 553, 555):
-        nq = 5
-        if helac_pdg == 551:
-            ns, target = 1, 553
-        elif helac_pdg == 553:
-            ns, target = 0, 553
-        else:
-            ns, target = 2, 553
-        return nq, ns, target
-    return None
+if [[ -f "${OCTET_PDG_TOOL}" ]] && grep -q "\<9900" "${FINAL_LHE_FILE}"; then
+    echo "[INFO] Standalone converter 后仍检测到旧编码，使用统一工具补做转换..."
+    PYTHONIOENCODING=UTF-8 python3 "${OCTET_PDG_TOOL}" convert-file "${FINAL_LHE_FILE}" --in-place >/dev/null
+fi
 
-def _singlet_LJ(target_pdg: int):
-    base = target_pdg % 1000
-    if base in (443, 553):
-        return 0, 1
-    if base in (441, 551):
-        return 0, 0
-    if base in (445, 555):
-        return 1, 2
-    return None
-
-def convert_octet_code(val: int):
-    if not str(val).startswith("9900"):
-        return None
-    helac_pdg = val - 9900000 if val >= 9900000 else val - 9900
-    mapping = _target_from_helac(helac_pdg)
-    if mapping is None:
-        return None
-    nq, ns, target = mapping
-    nr = target // 100000
-    lj = _singlet_LJ(target)
-    if lj is None:
-        return None
-    nL, J = lj
-    nJ = 2 * J + 1
-    return int(f"99{nq}{ns}{nr}{nL}{nJ}")
-
-def replace_match(m):
-    val = int(m.group(0))
-    new_code = convert_octet_code(val)
-    return str(new_code) if new_code is not None else m.group(0)
-
-new_text = re.sub(r"\b\d+\b", replace_match, text)
-lhe_path.write_text(new_text)
-PY
+verify_lhe_octet_codes "${FINAL_LHE_FILE}"
 
 # Create remote directory and copy to T2_CN_Beijing storage via XRootD
-echo "Creating remote directory on T2_CN_Beijing..."
-xrdfs "${EOS_HOST}" mkdir -p "${EOS_PATH_BASE}/${OUTPUT_DIR}" || {
-    echo "Warning: mkdir failed (directory may already exist)"
-}
+if [ "${SKIP_STAGEOUT:-0}" -eq 1 ]; then
+    echo "[INFO] SKIP_STAGEOUT=1, skip XRootD stageout"
+else
+    echo "Creating remote directory on T2_CN_Beijing..."
+    xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${OUTPUT_DIR}" || {
+        echo "Warning: mkdir failed (directory may already exist)"
+    }
 
-OUTPUT_FILE="root://${EOS_HOST}/${EOS_PATH_BASE}/${OUTPUT_DIR}/sample_${POOL_NAME}_${MY_SEED}.lhe"
-echo "Staging out LHE file to: ${OUTPUT_FILE}"
-xrdcp --nopbar --force "$LHE_FILE" "${OUTPUT_FILE}" || {
-    echo "Error: Failed to stage out LHE file"
-    exit 1
-}
-echo "LHE generation complete!"
-echo "Output: $OUTPUT_FILE"
+    OUTPUT_FILE="root://${EOS_HOST}/${EOS_PATH_BASE}/${OUTPUT_DIR}/sample_${POOL_NAME}_${MY_SEED}.lhe"
+    echo "Staging out LHE file to: ${OUTPUT_FILE}"
+    xrdcp --nopbar --force "${FINAL_LHE_FILE}" "${OUTPUT_FILE}" || {
+        echo "Error: Failed to stage out LHE file"
+        exit 1
+    }
+    echo "LHE generation complete!"
+    echo "Output: $OUTPUT_FILE"
+fi
 echo "=============================================="
 
 # Return to work directory

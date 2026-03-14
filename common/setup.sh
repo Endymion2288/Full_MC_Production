@@ -1,12 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# setup.sh - Environment setup for MC Production
+# setup.sh - MC 生产公共环境脚本
 # ==============================================================================
-# This script sets up the environment for running MC production jobs.
-# It can be sourced from any job script to ensure consistent environment.
-#
-# Usage:
-#   source setup.sh [--cmssw12 | --cmssw14 | --helac]
+# 保留给本地调试或单脚本测试使用；DAG 正式运行时以 worker 脚本内部逻辑为准。
 # ==============================================================================
 
 set -e
@@ -24,19 +20,20 @@ export COMMON_DIR="${MC_PRODUCTION_BASE}/common"
 export PACKAGES_DIR="${COMMON_DIR}/packages"
 export CMSSW_CONFIGS_DIR="${COMMON_DIR}/cmssw_configs"
 
-# CMSSW installations
-export CMSSW_12_BASE="/afs/cern.ch/user/x/xcheng/condor/CMSSW_12_4_14_patch3"
-export CMSSW_14_BASE="/afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18"
+# CMSSW 安装默认走 CVMFS，本地若有其他路径可在外部覆盖环境变量
+export CMSSW_12_BASE="${CMSSW_12_BASE:-/cvmfs/cms.cern.ch/el8_amd64_gcc10/cms/cmssw/CMSSW_12_4_14}"
+export CMSSW_14_BASE="${CMSSW_14_BASE:-/cvmfs/cms.cern.ch/el9_amd64_gcc12/cms/cmssw/CMSSW_14_0_18}"
 
 # T2_CN_Beijing XRootD storage paths
 export EOS_HOST="cceos.ihep.ac.cn"
-export EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production"
+export EOS_XRDFS_TARGET="root://${EOS_HOST}"
+export EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
 export EOS_BASE="root://${EOS_HOST}/${EOS_PATH_BASE}"
 export EOS_LHE_POOL="${EOS_BASE}/lhe_pools"
 export EOS_OUTPUT="${EOS_BASE}/output"
 
-# Existing LHE pools (now on T2_CN_Beijing storage)
-export EXISTING_LHE_JPSI_G="${EOS_BASE}/lhe_pools/pool_jpsi_g"
+# workbook_v2 版本默认以远端 LHE pool 动态扫描为准，这里只保留基础路径。
+export EXISTING_LHE_JPSI_G="${EOS_BASE}/lhe_pools/pool_jpsi_CSCO_g"
 export EXISTING_LHE_GG="${EOS_BASE}/lhe_pools/pool_gg"
 
 # Function to print colored messages
@@ -69,10 +66,10 @@ setup_cms_base() {
 
 # Function to setup CMSSW 12 environment (for GEN-SIM)
 setup_cmssw12() {
-    msg_info "Setting up CMSSW_12_4_14_patch3 environment..."
+    msg_info "Setting up CMSSW_12_4_14 environment..."
     
     if [ ! -d "${CMSSW_12_BASE}/src" ]; then
-        msg_error "CMSSW_12_4_14_patch3 not found at ${CMSSW_12_BASE}"
+        msg_error "CMSSW_12_4_14 not found at ${CMSSW_12_BASE}"
         return 1
     fi
     
@@ -83,7 +80,7 @@ setup_cmssw12() {
     cd - > /dev/null
     
     export CMSSW_ACTIVE="${CMSSW_12_BASE}"
-    msg_ok "CMSSW_12_4_14_patch3 environment ready (${CMSSW_VERSION})"
+    msg_ok "CMSSW_12_4_14 environment ready (${CMSSW_VERSION})"
 }
 
 # Function to setup CMSSW 14 environment (for Ntuple)
@@ -138,7 +135,7 @@ ensure_eos_dirs() {
     msg_info "Ensuring EOS output directories exist on T2_CN_Beijing..."
     
     for subdir in "lhe_pools" "output"; do
-        xrdfs "${EOS_HOST}" mkdir -p "${EOS_PATH_BASE}/${subdir}" 2>/dev/null || \
+        xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${subdir}" 2>/dev/null || \
             msg_warn "Cannot create ${EOS_PATH_BASE}/${subdir} (may already exist or permission issue)"
     done
 }
@@ -147,7 +144,7 @@ ensure_eos_dirs() {
 make_remote_dir() {
     local remote_path="$1"
     msg_info "Creating remote directory: ${remote_path}"
-    xrdfs "${EOS_HOST}" mkdir -p "${EOS_PATH_BASE}/${remote_path}" || {
+    xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${remote_path}" || {
         msg_error "Failed to create remote directory: ${EOS_PATH_BASE}/${remote_path}"
         return 1
     }
@@ -182,7 +179,7 @@ get_lhe_file() {
     
     # List files via xrdfs
     local file_list
-    file_list=$(xrdfs "${EOS_HOST}" ls "${EOS_PATH_BASE}/${pool_subpath}" 2>/dev/null | grep '\.lhe$' | sort)
+    file_list=$(xrdfs "${EOS_XRDFS_TARGET}" ls "${EOS_PATH_BASE}/${pool_subpath}" 2>/dev/null | grep '\.lhe$' | sort)
     
     if [[ -z "${file_list}" ]]; then
         msg_error "No LHE files found in ${EOS_PATH_BASE}/${pool_subpath}"

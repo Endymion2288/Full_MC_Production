@@ -16,7 +16,7 @@
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall
 
-# Fixed paths on CVMFS for el8_amd64_gcc10 (CMSSW_12_4_14_patch3)
+# Fixed paths on CVMFS for el8_amd64_gcc10 (CMSSW_12_4_14)
 # These are stable paths that work inside Singularity containers
 PYTHIA8_BASE_EL8 = /cvmfs/cms.cern.ch/el8_amd64_gcc10/external/pythia8/306-494ded5c626b685d055d5b022e918c0c
 HEPMC3_BASE_EL8 = /cvmfs/cms.cern.ch/el8_amd64_gcc10/external/hepmc3/3.2.5-c3cd50aeecf06b194814f1a75bf7872e
@@ -31,7 +31,7 @@ HEPMC2_INCLUDE = $(if $(HEPMC_BASE),$(HEPMC_BASE)/include,$(HEPMC2_BASE_EL8)/inc
 HEPMC2_LIBDIR = $(if $(HEPMC_BASE),$(HEPMC_BASE)/lib,$(HEPMC2_BASE_EL8)/lib)
 
 # Targets
-SHOWER_PROGS = shower_normal shower_phi
+SHOWER_PROGS = shower_normal shower_phi shower_sps
 MIXER_PROG = event_mixer_multisource
 ALL_PROGS = $(SHOWER_PROGS) $(MIXER_PROG)
 
@@ -73,6 +73,15 @@ shower_phi: shower_phi.cc
 		-lpythia8 -lHepMC3
 	@echo "Built: $@"
 
+shower_sps: shower_sps.cc
+	@echo "Building shower_sps..."
+	$(CXX) $(CXXFLAGS) $< -o $@ \
+		-I$(PYTHIA8_INCLUDE) -L$(PYTHIA8_LIBDIR) \
+		-I$(HEPMC3_INCLUDE) -L$(HEPMC3_LIBDIR) \
+		-Wl,-rpath,$(PYTHIA8_LIBDIR) -Wl,-rpath,$(HEPMC3_LIBDIR) \
+		-lpythia8 -lHepMC3
+	@echo "Built: $@"
+
 # Event mixer (uses both HepMC3 and HepMC2)
 event_mixer_multisource: event_mixer_multisource.cc
 	@echo "Building event_mixer_multisource..."
@@ -93,7 +102,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all      - Build all programs"
-	@echo "  shower   - Build shower_normal and shower_phi"
+	@echo "  shower   - Build shower_normal, shower_phi, and shower_sps"
 	@echo "  mixer    - Build event_mixer_multisource"
 	@echo "  clean    - Remove built files"
 	@echo ""

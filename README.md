@@ -1,322 +1,272 @@
-# Full MC Production System (T2_CN_Beijing)
-# ==========================================
+# T2_CN_Beijing MC Production DAGMan 系统
 
-A complete HTCondor DAGMan-based Monte Carlo production system for CMS physics analysis,
-covering the full chain from LHE generation to Ntuple production.
+本目录用于在 `lxplus` 上生成并提交面向 `T2_CN_Beijing` 的 HTCondor DAGMan 工作流，覆盖以下物理链路：
 
-**Target Site:** T2_CN_Beijing (IHEP)  
-**Storage:** `root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production_v2`
+`LHE(HELAC-Onia) -> Pythia8 shower -> HepMC mixing -> CMSSW GEN-SIM -> RAW -> RECO -> MiniAOD -> Ntuple`
 
-## Quick Start
+当前代码按 [`workbook_v2.md`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/workbook_v2.md) 重构，默认支持两类分析：
 
-### 1. Setup VOMS Proxy
+- `JJP`: `J/psi + J/psi + phi`
+- `JUP`: `J/psi + Upsilon + phi`
+
+## 当前验收口径
+
+- 代码接口保留全链路能力，包括 `Ntuple` 步骤。
+- 本轮小批量 HTCondor 测试默认以跑通到 `MiniAOD` 并完成远端 stage-out 为准。
+- `Ntuple` 步骤保留在接口中；若要真正执行，请确保 `common/packages/` 中的分析包存在且内容与目标分析代码同步。
+- `workbook_v2.md` 中要求的“所有程序、文件、证书统一打包上传后在 worker 解压运行”已经落实到当前 submit 模板；worker 运行时不再回读 AFS 业务目录。
+- worker 启动时会把打包证书复制到节点默认代理路径 `/tmp/x509up_u$UID`；后续程序不再通过环境变量指向解压目录中的本地文件。
+
+## 目录说明
+
+- [`dag_generator.py`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/dag_generator.py)
+  主入口。负责列出配置、校验环境、生成正式 DAG、生成测试 DAG。
+- [`lhe_generation/run_helac.sh`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/lhe_generation/run_helac.sh)
+  LHE 生成节点执行脚本。
+- [`processing/run_chain.sh`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/run_chain.sh)
+  processing 节点执行脚本，负责 shower/mix/CMSSW/可选 Ntuple/stage-out；为避免 `lxplus` 与 worker 容器的 glibc/ABI 不一致，脚本会在 worker 上强制重编译 `pythia_shower/` 下的工具。
+- [`common/octet_pdg.py`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common/octet_pdg.py)
+  HELAC 八重态旧编码与 Pythia8 `99nqnsnrnLnJ` 编码之间的统一转换/扫描工具。
+- [`processing/templates/`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/templates)
+  DAG 节点对应的 submit 模板；当前通过 runtime bundle + proxy bundle 在 worker 侧解压运行。
+- [`tests/submit_tests.sh`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/tests/submit_tests.sh)
+  生成并可选提交小批量测试 DAG。
+- [`tests/run_all_tests.sh`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/tests/run_all_tests.sh)
+  重构后测试总入口。
+- [`tests/test_octet_pdg_tool.sh`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/tests/test_octet_pdg_tool.sh)
+  八重态 PDG 映射规则的本地确定性自检。
+- [`tests/submit_lhe_matrix.sh`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/tests/submit_lhe_matrix.sh)
+  所有真实 LHE pool 的 HTCondor 小批量矩阵测试入口。
+
+## 环境准备
+
+### 1. 代理
+
+优先确保当前 shell 已有可用代理：
 
 ```bash
-# Setup CMS environment
 source /cvmfs/cms.cern.ch/cmsset_default.sh
-
-# Initialize proxy (run this first!)
 ./check_proxy.sh --init
-
-# Check status
 ./check_proxy.sh --status
 ```
 
-### 2. List Available Campaigns
+若你已经手动初始化过代理，也可以直接导出：
 
 ```bash
-python dag_generator.py --list-campaigns
+export X509_USER_PROXY=/tmp/x509up_u$(id -u)
 ```
 
-### 3. Generate and Submit DAG
+重构后的 DAG 默认会优先使用 AFS 上的持久代理副本：
 
 ```bash
-# Single campaign with 100 jobs
-python dag_generator.py --campaign JJP_DPS1 --jobs 100 --output jjp_dps1.dag
-
-# Submit
-mkdir -p log
-condor_submit_dag jjp_dps1.dag
+/afs/cern.ch/user/x/xcheng/x509up_u$(id -u)
 ```
 
-### 4. Run Full Chain Test
+这样 `condor_dagman` 在 schedd 上做 direct submit 时不会因为看不到 submit host 的 `/tmp` 证书而失败。
+
+### 2. 必需包
+
+硬依赖：
+
+- `common/packages/helac_package.tar.gz`
+
+可选但推荐：
+
+- `common/packages/jjp_code.tar.gz`
+- `common/packages/jup_code.tar.gz`
+
+分析包缺失时，`validate` 默认只给出提示，不会阻止生成“到 MiniAOD”为止的测试 DAG。
+
+## 主入口用法
+
+### 列出可用配置
 
 ```bash
-# Quick test (shower + mix only)
-./test_full_chain.sh --quick
-
-# Full chain test (100 events)
-./test_full_chain.sh --campaign JJP_DPS1
+python3 dag_generator.py list --kind all
+python3 dag_generator.py list --kind campaigns
+python3 dag_generator.py list --kind pools
 ```
 
----
-
-## Overview
-
-This system automates the production of simulated events for:
-- **JJP (J/psi + J/psi + phi)** physics processes
-- **JUP (J/psi + Upsilon + phi)** physics processes
-
-Including SPS (Single Parton Scattering), DPS (Double Parton Scattering), 
-and TPS (Triple Parton Scattering) topologies.
-
----
-
-## Production Chain
-
-```
-LHE Generation (HELAC-Onia with LDME parameters)
-        ↓
-Parton Shower (Pythia8 - Normal or Phi-enriched)
-        ↓
-Event Mixing (1/2/3 sources → SPS/DPS/TPS)
-        ↓
-GEN-SIM (CMSSW_12)
-        ↓
-RAW (DIGI + HLT + Pileup)
-        ↓
-RECO (Reconstruction)
-        ↓
-MiniAOD
-        ↓
-Ntuple (JJP or JUP analyzer, CMSSW_14)
-```
-
----
-
-## LHE Pool Definitions
-
-The system uses HELAC-Onia's `define` syntax to generate LHE files that include both 
-Color Singlet (CS) and Color Octet (CO) contributions in a single generation run.
-
-### CSCO Pools (Color Singlet + Color Octet Combined)
-
-| Pool Name | HELAC-Onia Command | Description |
-|-----------|-------------------|-------------|
-| `pool_jpsi_CSCO_g` | `define jpsi_all = cc~(3S11) cc~(3S18) cc~(1S08)` <br> `generate g g > jpsi_all g` | J/psi (CS+CO) + g |
-| `pool_upsilon_CSCO_g` | `define upsilon_all = bb~(3S11) bb~(3S18) bb~(1S08)` <br> `generate g g > upsilon_all g` | Υ (CS+CO) + g |
-| `pool_jpsi_upsilon_CSCO` | `generate g g > cc~(3S11) bb~(3S11)` | J/psi + Υ |
-
-### Basic Pools (Color Singlet Only)
-
-| Pool Name | HELAC-Onia Command | Description |
-|-----------|-------------------|-------------|
-| `pool_gg` | `g g > g g` | QCD dijet |
-| `pool_2jpsi` | `g g > cc~(3S11) cc~(3S11)` | Double J/psi |
-| `pool_2jpsi_g` | `g g > cc~(3S11) cc~(3S11) g` | Double J/psi + g |
-
-### LDME Parameters
-
-From H. Han et al, Phys. Rev. Lett. 114 (2015) 092005 and Phys. Rev. D 94 (2016) 014028:
-
-```
-# Charmonium
-LDMEcc3S11 = 1.16
-LDMEcc3S18 = 0.00902923
-LDMEcc1S08 = 0.0146
-
-# Bottomonium
-LDMEbb3S11 = 9.28
-LDMEbb3S18 = 0.0297426
-LDMEbb1S08 = 0.000170128
-```
-
----
-
-## Campaign Definitions
-
-### JJP Campaigns (J/psi + J/psi + Phi)
-
-| Campaign | Input Pools | Shower Modes | Description |
-|----------|-------------|--------------|-------------|
-| **JJP_SPS** | `pool_2jpsi_g` | [phi] | Single 2J/psi+g with forced phi shower |
-| **JJP_DPS1** | `pool_jpsi_CSCO_g` × 2 | [normal, phi] | Two J/psi(CS+CO)+g events mixed |
-| **JJP_DPS2** | `pool_2jpsi` + `pool_gg` | [normal, phi] | 2J/psi + gg→gg mixed |
-| **JJP_TPS** | `pool_jpsi_CSCO_g` × 2 + `pool_gg` | [normal, normal, phi] | Triple parton scattering |
-
-### JUP Campaigns (J/psi + Upsilon + Phi)
-
-| Campaign | Input Pools | Shower Modes | Description |
-|----------|-------------|--------------|-------------|
-| **JUP_SPS** | `pool_jpsi_upsilon_CSCO` | [phi] | **[DEPRECATED]** |
-| **JUP_DPS1** | `pool_jpsi_CSCO_g` + `pool_upsilon_CSCO_g` | [phi, normal] | J/psi(phi) + Υ(normal) |
-| **JUP_DPS2** | `pool_jpsi_CSCO_g` + `pool_upsilon_CSCO_g` | [normal, phi] | J/psi(normal) + Υ(phi) |
-| **JUP_DPS3** | `pool_jpsi_upsilon_CSCO` + `pool_gg` | [normal, phi] | J/psi+Υ + gg→gg mixed |
-| **JUP_TPS** | `pool_jpsi_CSCO_g` + `pool_upsilon_CSCO_g` + `pool_gg` | [normal, normal, phi] | Triple parton scattering |
-
----
-
-## Directory Structure
-
-```
-T2_CN_Beijing/
-├── dag_generator.py            # DAG generation script
-├── check_proxy.sh              # VOMS proxy management
-├── test_full_chain.sh          # Full chain test script
-├── README.md                   # This file
-├── common/
-│   ├── setup.sh                # Environment setup
-│   ├── packages/               # Deployment packages
-│   │   ├── helac_package.tar.gz    # HELAC-Onia sources
-│   │   ├── jjp_code.tar.gz         # JJP ntuple code
-│   │   └── jup_code.tar.gz         # JUP ntuple code
-│   └── cmssw_configs/          # CMSSW configuration files
-│       ├── hepmc_to_GENSIM.py
-│       ├── ntuple_jjp_cfg.py
-│       └── ntuple_jup_cfg.py
-├── lhe_generation/             # LHE production module
-│   ├── run_helac.sh            # HELAC job script
-│   └── input_templates/
-│       └── user.inp            # HELAC physics cuts
-├── processing/                 # Main processing module
-│   ├── run_chain.sh            # Universal production wrapper
-│   ├── pythia_shower/          # Shower programs
-│   │   ├── Makefile
-│   │   ├── shower_normal.cc    # Standard shower
-│   │   ├── shower_phi.cc       # Phi-enriched shower
-│   │   └── event_mixer_multisource.cc
-│   └── templates/              # HTCondor submit files
-│       ├── lhe_gen.sub
-│       ├── processing.sub
-│       └── summary.sub
-├── log/                        # Job log files
-└── test_output/                # Test output directory
-```
-
----
-
-## Preparing Packages
-
-### 1. HELAC Package
+### 校验环境
 
 ```bash
-cd /path/to/HELAC-on-HTCondor/sources
-tar -czf helac_package.tar.gz HELAC-Onia-2.7.6.tar.gz hepmc2.06.11.tgz
-cp helac_package.tar.gz /path/to/T2_CN_Beijing/common/packages/
+python3 dag_generator.py validate --campaign JJP_DPS2 --scan-existing
+python3 dag_generator.py validate --campaign JUP_DPS1 --scan-existing
 ```
 
-### 2. JJP/JUP Analysis Packages
+若要把 `jjp_code.tar.gz` 和 `jup_code.tar.gz` 也作为硬依赖：
 
 ```bash
-# JJP package
-cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18/src
-tar --exclude='.git' --exclude='*.root' -czf jjp_code.tar.gz JJPNtupleMaker/
-cp jjp_code.tar.gz /path/to/T2_CN_Beijing/common/packages/
-
-# JUP package
-tar --exclude='.git' --exclude='*.root' -czf jup_code.tar.gz JUPNtupleMaker/
-cp jup_code.tar.gz /path/to/T2_CN_Beijing/common/packages/
+python3 dag_generator.py validate --campaign JJP_DPS1 --strict-analysis-packages
 ```
 
----
-
-## Usage Examples
-
-### Generate DAG for All JJP Campaigns
+### 生成正式 DAG
 
 ```bash
-python dag_generator.py --campaign JJP_ALL --jobs 1000 --output jjp_all.dag
+python3 dag_generator.py generate \
+  --campaign JJP_DPS1 \
+  --jobs 20 \
+  --output-dir generated/jjp_dps1 \
+  --output jjp_dps1.dag \
+  --max-events -1
 ```
 
-### Generate DAG for All Campaigns
+常用可选项：
+
+- `--disable-ntuple`
+  只跑到 MiniAOD，再做 transfer。
+- `--force-generate-lhe`
+  不复用远端已有 LHE pool。
+- `--no-scan-existing`
+  不扫描远端已有 LHE。
+- `--test-mode`
+  把 LHE 生成切到 fast-test。
+
+### 仅准备 worker runtime bundle
 
 ```bash
-python dag_generator.py --campaign ALL --jobs 500 --output full_production.dag
+python3 dag_generator.py prepare-runtime \
+  --output-dir tests/generated/runtime_bundle_check
 ```
 
-### Dry Run (Preview DAG Content)
+说明：
+
+- submit 模式下，bundle 输出目录必须放在 AFS 工作区，而不是 submit host 的本地 `/tmp`。
+- 该命令会同时生成：
+  - `lhe_runtime_bundle.tar.gz`
+  - `processing_runtime_bundle.tar.gz`
+  - `summary_runtime_bundle.tar.gz`
+  - `proxy_bundle.tar.gz`
+
+### 生成小批量测试 DAG
 
 ```bash
-python dag_generator.py --campaign JJP_DPS1 --jobs 10 --dry-run
+python3 dag_generator.py generate-test \
+  --campaign JJP_DPS1 \
+  --campaign JUP_DPS1 \
+  --jobs 1 \
+  --max-events 5 \
+  --output-dir tests/generated/manual_test \
+  --output mc_test.dag
 ```
 
-### Monitor Running DAG
+`generate-test` 默认行为：
+
+- `jobs = 1`
+- `max-events = 5`
+- `disable-ntuple`
+- `scan-existing = true`
+
+## 测试入口
+
+### 只做静态校验和测试 DAG 生成
 
 ```bash
+./tests/run_all_tests.sh
+```
+
+该入口默认覆盖：
+
+- `JJP_DPS2`
+- `JUP_DPS1`
+
+并会先执行：
+
+- `./tests/test_octet_pdg_tool.sh`
+
+### 生成后直接提交到 HTCondor
+
+```bash
+./tests/run_all_tests.sh --submit
+```
+
+### 指定等待 DAGMan 结束
+
+```bash
+./tests/run_all_tests.sh --submit --wait
+```
+
+### 更细的测试控制
+
+```bash
+./tests/submit_tests.sh \
+  --campaign JJP_DPS2 \
+  --campaign JUP_DPS1 \
+  --jobs 1 \
+  --max-events 5 \
+  --submit
+```
+
+### LHE 全池小批量矩阵测试
+
+```bash
+./tests/submit_lhe_matrix.sh --submit --wait
+```
+
+该入口会覆盖：
+
+- `pool_jpsi_CSCO_g`
+- `pool_upsilon_CSCO_g`
+- `pool_gg`
+- `pool_2jpsi_cs`
+- `pool_2jpsi_g`
+- `pool_jpsi_upsilon_CSCO`
+
+并在作业结束后自动：
+
+- 从远端把对应 LHE 拉回本地临时目录
+- 用 `common/octet_pdg.py scan --fail-on-legacy` 检查是否还残留 `9900xxxx` 旧编码
+
+测试输出会写到：
+
+- DAG 和元数据：`tests/generated/<时间戳>/`
+- 提交日志：`tests/log/`
+- HTCondor stdout/stderr/log：仓库根目录 `log/`
+- 远端物理输出：`root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production_v2/output/<campaign>/<job_id>/`
+
+## shower 模式说明
+
+目前统一支持三种模式名：
+
+- `normal`
+  普通 shower。
+- `phi_mpi_off`
+  workbook 默认的 phi-enriched 模式，关闭 MPI，循环 hadronize 直到出现目标 `phi`。
+- `phi_mpi_on_gluon`
+  保留给 workbook 的扩展模式 2，当前由 `shower_phi` 执行。
+
+兼容别名：
+
+- `phi`、`phi_mode1`、`sps` 都会映射为 `phi_mpi_off`
+- `phi_mode2` 会映射为 `phi_mpi_on_gluon`
+
+## 当前已知限制
+
+- `pool_2jpsi` 现已在 worker 上按 `pool_2jpsi_cs` 与 `pool_2jpsi_g` 的 LHE `<init>` 截面做确定性加权抽样；若远端样例文件缺少可解析截面，脚本会回退到等权混合并打印警告。
+- 即使分析包存在，本轮小批量 Condor 验证也仍建议默认使用 `--disable-ntuple`，先把验收聚焦在 MiniAOD 与远端 stage-out。
+- `phi_mpi_on_gluon` 当前通过 Pythia 事件记录里 `status 21-29` 的 hardest-process gluon 祖先关系判定 `phi` 来源；这已经比原来的占位接口更接近 workbook 要求，但仍建议在正式大样本前做额外物理抽查。
+- `condor_submit` 目前会对 submit 模板中的 `MaxRetries` 给出“unused”警告；这不影响实际提交，但说明该字段不是 submit 描述层的生效参数，真正的重试控制仍以 DAGMan `RETRY` 为准。
+
+## 典型工作流
+
+```bash
+# 1. 检查代理与环境
+python3 dag_generator.py validate --campaign JJP_DPS2 --scan-existing
+
+# 2. 生成小批量测试 DAG
+python3 dag_generator.py generate-test \
+  --campaign JJP_DPS2 \
+  --campaign JUP_DPS1 \
+  --output-dir tests/generated/smoke \
+  --output smoke.dag
+
+# 3. 提交
+condor_submit_dag tests/generated/smoke/smoke.dag
+
+# 4. 观察队列
 condor_q
-tail -f my_production.dag.dagman.out
 ```
 
----
+## 旧脚本说明
 
-## Testing
-
-### Quick Test (Shower + Mix Only)
-
-```bash
-./test_full_chain.sh --quick --campaign JJP_DPS1
-```
-
-This will:
-1. Generate ~100 LHE events using HELAC-Onia (in el7 container)
-2. Run Pythia8 shower (normal + phi modes)
-3. Mix events using event_mixer_multisource
-
-### Full Chain Test
-
-```bash
-./test_full_chain.sh --campaign JJP_DPS1
-```
-
-This runs the complete chain including GEN-SIM, RAW, RECO, MiniAOD, and Ntuple steps.
-
-### Test Options
-
-| Option | Description |
-|--------|-------------|
-| `--quick` | Stop after shower+mix (skip CMSSW steps) |
-| `--skip-lhe` | Skip LHE generation (use existing file) |
-| `--campaign NAME` | Campaign to test (default: JJP_DPS1) |
-| `--clean` | Clean test directory before starting |
-
----
-
-## Key Changes from Previous Version
-
-1. **Simplified LHE Generation**: Using HELAC-Onia's `define` syntax to include CS+CO contributions in single generation, eliminating the need for cross-section weighted mixing.
-
-2. **New Pool Naming**: `pool_jpsi_g` → `pool_jpsi_CSCO_g` to clearly indicate CS+CO content.
-
-3. **LDME Parameters**: Explicit LDME values from published references are now configured in run_helac.sh.
-
-4. **Removed xsec Mixing**: The `lhe_xsec_mixer` tool and related logic have been removed as they are no longer needed.
-
-5. **Storage Path**: Updated to `MC_Production_v2` for clean separation from previous production.
-
----
-
-## Troubleshooting
-
-### Proxy Issues
-
-```bash
-# Check proxy validity
-./check_proxy.sh --status
-
-# Reinitialize proxy
-./check_proxy.sh --init
-
-# Test XRootD access
-./check_proxy.sh --test
-```
-
-### HELAC Build Failures
-
-HELAC-Onia requires the el7 container:
-```bash
-apptainer exec /cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64 /bin/bash
-```
-
-### Missing Packages
-
-Ensure all required packages exist:
-```bash
-ls -la common/packages/
-# Should show: helac_package.tar.gz, jjp_code.tar.gz, jup_code.tar.gz
-```
-
----
-
-## Contact
-
-For issues or questions, check the job logs in `log/` directory or the DAGMan output file.
+`tests/test_lhe_generation.sh`、`tests/test_shower_chain.sh`、`tests/test_cmssw_chain.sh` 和 `tests/test_pipeline.sh` 仍然保留，主要用于组件级调试。重构后的推荐提交流程以 `dag_generator.py + tests/submit_tests.sh` 为准。
