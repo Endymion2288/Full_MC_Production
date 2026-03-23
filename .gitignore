@@ -19,3 +19,7 @@ __pycache__/
 tmp/
 xcheng.cc
 test_output/
+.claude/
+generated/
+output*/
+log_full/

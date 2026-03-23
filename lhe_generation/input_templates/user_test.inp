@@ -75,18 +75,17 @@ absoluterap F
 # Monte Carlo settings - TEST: only 1000 events
 unwgt T
 lhewgtup F
-preunw 3000         # reduced for testing
-unwevt 1000         # *** ONLY 1000 EVENTS FOR TESTING ***
-nmc 200000          # reduced phase space sampling
-nopt 20000
-nopt_step 20000
+preunw 10000        # 测试时也保持与正式一致的 nmc/10 关系
+unwevt 1000         # 仅作模板默认值，实际由脚本参数覆盖
+nmc 100000          # 小 unwevt 下保持积分下限
+nopt 10000
+nopt_step 10000
 optf 1
 maxopt 8
-noptlim 200000
+noptlim 100000
 iopt 1
 alimit 0
 nlimit 1
 gener 0
 ranhel 4
 pdf 10000
-

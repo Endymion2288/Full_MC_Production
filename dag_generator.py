@@ -196,6 +196,9 @@ class WorkflowOptions:
         scan_existing: bool,
         force_generate_lhe: bool,
         proxy_path: str,
+        lhe_unwevt: Optional[int],
+        dagman_max_jobs_submitted: int,
+        dagman_max_jobs_idle: int,
     ):
         self.jobs_per_campaign = jobs_per_campaign
         self.max_events = max_events
@@ -205,6 +208,14 @@ class WorkflowOptions:
         self.scan_existing = scan_existing
         self.force_generate_lhe = force_generate_lhe
         self.proxy_path = proxy_path
+        self.lhe_unwevt = lhe_unwevt
+        self.dagman_max_jobs_submitted = dagman_max_jobs_submitted
+        self.dagman_max_jobs_idle = dagman_max_jobs_idle
+
+    def resolved_lhe_unwevt(self) -> int:
+        if self.lhe_unwevt is not None:
+            return self.lhe_unwevt
+        return 100 if self.test_mode else 100000
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -216,6 +227,9 @@ class WorkflowOptions:
             "scan_existing": self.scan_existing,
             "force_generate_lhe": self.force_generate_lhe,
             "proxy_path": self.proxy_path,
+            "lhe_unwevt": self.resolved_lhe_unwevt(),
+            "dagman_max_jobs_submitted": self.dagman_max_jobs_submitted,
+            "dagman_max_jobs_idle": self.dagman_max_jobs_idle,
         }
 
 
@@ -795,7 +809,7 @@ class DAGBuilder:
                     min_pt_conia=dag_escape(pool.min_pt_conia),
                     min_pt_bonia=dag_escape(pool.min_pt_bonia),
                     min_pt_q=dag_escape(pool.min_pt_q),
-                    unwevt=dag_escape(50 if self.options.test_mode else 10000000),
+                    unwevt=dag_escape(self.options.resolved_lhe_unwevt()),
                     test_mode=dag_escape(bool_string(self.options.test_mode)),
                     request_cpus=dag_escape(request_cpus),
                     request_memory=dag_escape(request_memory),
@@ -946,12 +960,12 @@ class DAGBuilder:
         return "\n".join(self.dag_lines)
 
 
-def render_dagman_config() -> str:
+def render_dagman_config(options: WorkflowOptions) -> str:
     return "\n".join(
         (
             "# DAGMan 基础配置",
-            "DAGMAN_MAX_JOBS_SUBMITTED = 200",
-            "DAGMAN_MAX_JOBS_IDLE = 100",
+            f"DAGMAN_MAX_JOBS_SUBMITTED = {options.dagman_max_jobs_submitted}",
+            f"DAGMAN_MAX_JOBS_IDLE = {options.dagman_max_jobs_idle}",
             "DAGMAN_MAX_SUBMITS_PER_INTERVAL = 20",
             "DAGMAN_SUBMIT_DELAY = 1",
             "DAGMAN_SUPPRESS_NOTIFICATION = True",
@@ -965,6 +979,7 @@ def write_generated_files(
     output_dir: str,
     dag_filename: str,
     dag_content: str,
+    dagman_config_content: str,
     metadata: Dict[str, object],
 ) -> Tuple[str, str, str]:
     ensure_dir(output_dir)
@@ -976,7 +991,7 @@ def write_generated_files(
         handle.write(dag_content)
 
     with open(config_path, "w", encoding="utf-8") as handle:
-        handle.write(render_dagman_config())
+        handle.write(dagman_config_content)
 
     with open(metadata_path, "w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2, ensure_ascii=False)
@@ -1168,6 +1183,7 @@ def execute_generation(
         output_dir=output_dir,
         dag_filename=dag_filename,
         dag_content=dag_content,
+        dagman_config_content=render_dagman_config(options),
         metadata=builder.metadata,
     )
 
@@ -1205,6 +1221,12 @@ def add_common_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--jobs", type=int, default=1, help="每个 campaign 的 job 数。")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="输出目录。")
     parser.add_argument("--output", default="mc_production.dag", help="输出 DAG 文件名。")
+    parser.add_argument(
+        "--lhe-unwevt",
+        type=int,
+        default=None,
+        help="LHE 节点的 unwevt；默认正式模式 100000、测试模式 100。",
+    )
     parser.add_argument("--max-events", type=int, default=-1, help="processing 节点的 max-events。")
     parser.add_argument(
         "--enable-ntuple",
@@ -1254,6 +1276,18 @@ def add_common_generation_arguments(parser: argparse.ArgumentParser) -> None:
         "--proxy-path",
         default=detect_proxy_path(),
         help="X509 代理路径；默认自动探测。",
+    )
+    parser.add_argument(
+        "--dagman-max-jobs-submitted",
+        type=int,
+        default=200,
+        help="DAGMan 允许同时提交/运行的最大节点数。",
+    )
+    parser.add_argument(
+        "--dagman-max-jobs-idle",
+        type=int,
+        default=100,
+        help="DAGMan 允许同时处于 idle 状态的最大节点数。",
     )
     parser.add_argument("--dry-run", action="store_true", help="只打印 DAG，不写文件。")
 
@@ -1395,6 +1429,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             scan_existing=args.scan_existing,
             force_generate_lhe=args.force_generate_lhe,
             proxy_path=args.proxy_path,
+            lhe_unwevt=args.lhe_unwevt,
+            dagman_max_jobs_submitted=args.dagman_max_jobs_submitted,
+            dagman_max_jobs_idle=args.dagman_max_jobs_idle,
         )
         return execute_generation(
             campaign_names=campaign_names,

@@ -109,6 +109,72 @@ msg_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 msg_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 msg_step() { echo -e "\n${YELLOW}========================================${NC}"; echo -e "${YELLOW}  $1${NC}"; echo -e "${YELLOW}========================================${NC}\n"; }
 
+# 高噪声命令统一写入 worker 本地日志，避免 Condor stdout/stderr 过大被 hold。
+JOB_LOG_DIR=""
+COMMAND_LOG_INDEX=0
+
+sanitize_log_label() {
+    local raw_label="$1"
+    printf '%s' "${raw_label}" | sed 's/[^A-Za-z0-9._-]/_/g'
+}
+
+ensure_job_log_dir() {
+    if [[ -n "${JOB_LOG_DIR}" ]]; then
+        mkdir -p "${JOB_LOG_DIR}"
+        return 0
+    fi
+    if [[ -z "${WORKDIR:-}" ]]; then
+        return 1
+    fi
+    JOB_LOG_DIR="${WORKDIR}/command_logs"
+    mkdir -p "${JOB_LOG_DIR}"
+}
+
+show_log_tail() {
+    local label="$1"
+    local file_path="$2"
+    local max_lines="$3"
+    if [[ -s "${file_path}" ]]; then
+        msg_warn "${label} 摘要 (${file_path}, tail -n ${max_lines})"
+        tail -n "${max_lines}" "${file_path}"
+    fi
+}
+
+run_logged() {
+    local label="$1"
+    shift
+
+    ensure_job_log_dir || {
+        msg_error "无法初始化本地命令日志目录"
+        return 1
+    }
+
+    COMMAND_LOG_INDEX=$((COMMAND_LOG_INDEX + 1))
+    local safe_label=""
+    safe_label=$(sanitize_log_label "${label}")
+    local log_prefix
+    printf -v log_prefix "%s/%03d_%s" "${JOB_LOG_DIR}" "${COMMAND_LOG_INDEX}" "${safe_label}"
+    local stdout_log="${log_prefix}.stdout"
+    local stderr_log="${log_prefix}.stderr"
+    local rc=0
+    local stdout_size=0
+    local stderr_size=0
+
+    msg_info "执行 ${label}，详细日志写入 ${log_prefix}.[stdout|stderr]"
+    if "$@" >"${stdout_log}" 2>"${stderr_log}"; then
+        stdout_size=$(wc -c < "${stdout_log}" 2>/dev/null || echo 0)
+        stderr_size=$(wc -c < "${stderr_log}" 2>/dev/null || echo 0)
+        msg_ok "${label} 完成 (stdout=${stdout_size} B, stderr=${stderr_size} B)"
+        return 0
+    fi
+
+    rc=$?
+    msg_error "${label} 失败 (rc=${rc})"
+    show_log_tail "${label} stderr" "${stderr_log}" 80 >&2
+    show_log_tail "${label} stdout" "${stdout_log}" 40
+    return "${rc}"
+}
+
 normalize_shower_mode() {
     case "$1" in
         normal)
@@ -168,7 +234,7 @@ convert_lhe_octet_codes() {
 make_remote_dir() {
     local remote_subpath="$1"
     msg_info "Creating remote directory: ${EOS_PATH_BASE}/${remote_subpath}"
-    run_xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${remote_subpath}" || {
+    run_logged "xrdfs_mkdir_${remote_subpath//\//_}" run_xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${remote_subpath}" || {
         msg_error "Failed to create remote directory: ${EOS_PATH_BASE}/${remote_subpath}"
         return 1
     }
@@ -188,7 +254,7 @@ stage_out() {
     local remote_url="${EOS_BASE}/${remote_subpath}"
     msg_info "Staging out: ${local_file} -> ${remote_url}"
     
-    run_xrdcp --nopbar --force "${local_file}" "${remote_url}" || {
+    run_logged "xrdcp_stageout_$(basename "${local_file}")" run_xrdcp --nopbar --force "${local_file}" "${remote_url}" || {
         msg_error "Failed to stage out ${local_file} to ${remote_url}"
         return 1
     }
@@ -443,7 +509,7 @@ ensure_cmssw12_project() {
     export SCRAM_ARCH=el8_amd64_gcc10
     
     cd "${WORKDIR}"
-    scramv1 project CMSSW CMSSW_12_4_14 >&2 || {
+    run_logged "scram_project_CMSSW_12_4_14" scramv1 project CMSSW CMSSW_12_4_14 >&2 || {
         msg_error "Failed to create CMSSW_12_4_14 project" >&2
         return 1
     }
@@ -492,7 +558,7 @@ scramv1 project CMSSW CMSSW_14_0_18
 CREATEEOF
     chmod +x "${tmp_script}"
     
-    apptainer exec \
+    run_logged "apptainer_create_CMSSW_14_0_18" apptainer exec \
         --bind /cvmfs:/cvmfs \
         --bind /tmp:/tmp \
         --bind "${WORKDIR}:${WORKDIR}" \
@@ -585,7 +651,7 @@ SCRIPT_EOF
     
     chmod +x "${tmp_script}"
     
-    apptainer exec \
+    run_logged "apptainer_cmsRun_$(basename "${cfg}")" apptainer exec \
         --bind /cvmfs:/cvmfs \
         --bind /tmp:/tmp \
         --bind "${WORKDIR}:${WORKDIR}" \
@@ -659,7 +725,7 @@ scramv1 project CMSSW CMSSW_14_0_18
 CREATEEOF
         chmod +x "${tmp_script}"
         
-        apptainer exec \
+        run_logged "apptainer_create_CMSSW_14_0_18_pkg" apptainer exec \
             --bind /cvmfs:/cvmfs \
             --bind /tmp:/tmp \
             --bind "${WORKDIR}:${WORKDIR}" \
@@ -697,7 +763,7 @@ scram b -j 4
 BUILDEOF
         chmod +x "${tmp_script}"
         
-        apptainer exec \
+        run_logged "apptainer_scram_b_${ANALYSIS_TYPE}" apptainer exec \
             --bind /cvmfs:/cvmfs \
             --bind /tmp:/tmp \
             --bind "${WORKDIR}:${WORKDIR}" \
@@ -723,7 +789,7 @@ ensure_worker_shower_tools() {
     fi
 
     msg_info "Rebuilding shower/mixer tools inside worker for ABI compatibility..."
-    make -B all
+    run_logged "build_pythia_shower_tools" make -B all
     SHOWER_BUILD_DONE="true"
 }
 
@@ -768,7 +834,7 @@ run_shower() {
         # Download LHE file if it's a remote XRootD URL
         if [[ "$lhe_file" == root://* ]]; then
             msg_info "Downloading LHE from XRootD..."
-            run_xrdcp -f "${lhe_file}" "${local_lhe}"
+            run_logged "xrdcp_input_lhe_${i}" run_xrdcp -f "${lhe_file}" "${local_lhe}"
             if [[ $? -ne 0 ]] || [[ ! -f "${local_lhe}" ]]; then
                 msg_error "Failed to download LHE file from ${lhe_file}"
                 return 1
@@ -786,14 +852,14 @@ run_shower() {
         if [[ "$normalized_mode" == "phi_mpi_off" ]]; then
             # workbook_v2 默认模式：关闭 MPI，循环 hadronize 找 phi。
             msg_info "Running phi-enriched mode-1 shower (MPI off)..."
-            ./shower_sps "${lhe_file}" "${hepmc_output}" "${shower_events}" 0.0 2.5 2.4 1000
+            run_logged "shower_sps_${i}" ./shower_sps "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 1000
         elif [[ "$normalized_mode" == "phi_mpi_on_gluon" ]]; then
             # 扩展模式：开启 MPI，并交给 shower_phi 处理来源判定。
             msg_info "Running phi-enriched mode-2 shower (MPI on)..."
-            ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 0.0 2.5 2.4 1000 1
+            run_logged "shower_phi_${i}" ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 1000 1
         else
             # 普通 shower。
-            ./shower_normal "${lhe_file}" "${hepmc_output}" "${shower_events}" 2.5 2.4 1000
+            run_logged "shower_normal_${i}" ./shower_normal "${lhe_file}" "${hepmc_output}" "${shower_events}" 2.5 2.4 1000
         fi
         
         if [[ ! -f "${hepmc_output}" ]]; then
@@ -820,10 +886,10 @@ run_mix() {
     
     if [[ $n_sources -eq 1 ]]; then
         msg_info "Single source - converting to HepMC2 format..."
-        ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[0]}"
+        run_logged "event_mixer_single" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[0]}"
     else
         msg_info "Mixing ${n_sources} sources..."
-        ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[@]}"
+        run_logged "event_mixer_multi" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[@]}"
     fi
     
     if [[ ! -f "${MIXED_HEPMC}" ]]; then
@@ -852,7 +918,7 @@ run_gensim() {
     setup_cmssw12
     
     msg_info "Running HepMC -> GEN-SIM..."
-    cmsRun "${CMSSW_CONFIGS_DIR}/hepmc_to_GENSIM.py" \
+    run_logged "cmsRun_hepmc_to_GENSIM" cmsRun "${CMSSW_CONFIGS_DIR}/hepmc_to_GENSIM.py" \
         inputFiles="file:${MIXED_HEPMC}" \
         outputFile="file:${GENSIM_OUTPUT}" \
         maxEvents=${MAX_EVENTS} \
@@ -877,7 +943,7 @@ run_raw() {
     local cfg_file=$(mktemp --suffix=_raw_cfg.py)
     
     msg_info "Generating RAW config..."
-    cmsDriver.py step2 \
+    run_logged "cmsDriver_step2_raw" cmsDriver.py step2 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
         --eventcontent PREMIXRAW \
@@ -897,7 +963,7 @@ run_raw() {
         --fileout "file:${RAW_OUTPUT}"
     
     msg_info "Running RAW step..."
-    cmsRun "${cfg_file}"
+    run_logged "cmsRun_step2_raw" cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${RAW_OUTPUT}" ]]; then
@@ -919,7 +985,7 @@ run_reco() {
     local cfg_file=$(mktemp --suffix=_reco_cfg.py)
     
     msg_info "Generating RECO config..."
-    cmsDriver.py step3 \
+    run_logged "cmsDriver_step3_reco" cmsDriver.py step3 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
         --eventcontent AODSIM \
@@ -937,7 +1003,7 @@ run_reco() {
         --fileout "file:${RECO_OUTPUT}"
     
     msg_info "Running RECO step..."
-    cmsRun "${cfg_file}"
+    run_logged "cmsRun_step3_reco" cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${RECO_OUTPUT}" ]]; then
@@ -959,7 +1025,7 @@ run_miniaod() {
     local cfg_file=$(mktemp --suffix=_miniaod_cfg.py)
     
     msg_info "Generating MiniAOD config..."
-    cmsDriver.py step4 \
+    run_logged "cmsDriver_step4_miniaod" cmsDriver.py step4 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
         --eventcontent MINIAODSIM \
@@ -975,7 +1041,7 @@ run_miniaod() {
         --fileout "file:${MINIAOD_OUTPUT}"
     
     msg_info "Running MiniAOD step..."
-    cmsRun "${cfg_file}"
+    run_logged "cmsRun_step4_miniaod" cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${MINIAOD_OUTPUT}" ]]; then

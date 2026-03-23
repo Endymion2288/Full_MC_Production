@@ -23,21 +23,21 @@ MIN_PT_BONIA=4.0
 MIN_PT_Q=4.0
 WORKDIR=$(pwd)
 OUTPUT_DIR=""
-# Integration and event-generation controls (can be overridden for fast tests)
-# PREUNW=3000000
-# UNWEVT=1000000000
-# NMC=200000000
-# NOPT=20000000
-# NOPT_STEP=20000000
-# NOPT_LIM=200000000
-PREUNW=300000
+# workbook_v2 / 用户补充要求：
+# 1. 优先使用 gener = 0 (PHEGAS)
+# 2. gener = 0 时推荐 nopt = nmc/10, nopt_step = nmc/10, noptlim = nmc
+# 3. preunw 推荐取 nmc/10
+# 4. 当 unwevt 较小时，nmc 仍需设置一个下限，避免只得到 header-only LHE
+GENER=0
 UNWEVT=10000000
-NMC=2000000
-NOPT=2000000
-NOPT_STEP=2000000
-NOPT_LIM=20000000
+NMC=100000
+PREUNW=10000
+NOPT=10000
+NOPT_STEP=10000
+NOPT_LIM=100000
 FAST_TEST=0
 TEST_MODE="false"
+UNWEVT_OVERRIDE=0
 # Build locations (populated after unpacking helac_package.tar.gz)
 HEPMC_SRC_TGZ=""
 HELAC_SRC_TAR=""
@@ -221,6 +221,52 @@ verify_lhe_octet_codes() {
     PYTHONIOENCODING=UTF-8 python3 "${OCTET_PDG_TOOL}" scan "${lhe_file}" --fail-on-legacy
 }
 
+count_lhe_events() {
+    local lhe_file="$1"
+    local event_count="0"
+    if [[ ! -f "${lhe_file}" ]]; then
+        echo "0"
+        return 0
+    fi
+    event_count=$(grep -c '^[[:space:]]*<event>' "${lhe_file}" 2>/dev/null || true)
+    if [[ -z "${event_count}" ]]; then
+        event_count="0"
+    fi
+    echo "${event_count}"
+}
+
+prepare_runtime_user_inp() {
+    local helac_dir="$1"
+    local runtime_user_inp="${helac_dir}/input/user.inp"
+    local template_user_inp="../input_templates/user.inp"
+
+    if [[ -f "${template_user_inp}" ]]; then
+        cp "${template_user_inp}" "${runtime_user_inp}"
+    elif [[ ! -f "${runtime_user_inp}" ]]; then
+        echo "[ERROR] 找不到可用的 user.inp 模板"
+        return 1
+    fi
+
+    # worker 上显式重写 Monte Carlo 相关参数，避免旧模板把 run_config.ho 中的
+    # 积分设置重新覆盖掉。
+    sed -i -E \
+        -e "s|^(minptq)[[:space:]].*$|\\1 ${MIN_PT_Q}d0|" \
+        -e "s|^(minptconia)[[:space:]].*$|\\1 ${MIN_PT_CONIA}d0|" \
+        -e "s|^(minptbonia)[[:space:]].*$|\\1 ${MIN_PT_BONIA}d0|" \
+        -e "s|^(preunw)[[:space:]].*$|\\1 ${PREUNW}|" \
+        -e "s|^(unwevt)[[:space:]].*$|\\1 ${UNWEVT}|" \
+        -e "s|^(nmc)[[:space:]].*$|\\1 ${NMC}|" \
+        -e "s|^(nopt)[[:space:]].*$|\\1 ${NOPT}|" \
+        -e "s|^(nopt_step)[[:space:]].*$|\\1 ${NOPT_STEP}|" \
+        -e "s|^(noptlim)[[:space:]].*$|\\1 ${NOPT_LIM}|" \
+        -e "s|^(gener)[[:space:]].*$|\\1 ${GENER}|" \
+        -e "s|^(ranhel)[[:space:]].*$|\\1 4|" \
+        "${runtime_user_inp}"
+
+    echo "[INFO] 运行时 user.inp 中的关键积分参数:"
+    grep -E '^(minptq|minptconia|minptbonia|preunw|unwevt|nmc|nopt|nopt_step|noptlim|gener|ranhel)[[:space:]]' "${runtime_user_inp}"
+}
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -254,6 +300,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --unwevt)
             UNWEVT="$2"
+            UNWEVT_OVERRIDE=1
             shift 2
             ;;
         --fast-test)
@@ -344,19 +391,33 @@ if [ "$TEST_MODE" = "true" ]; then
     FAST_TEST=1
 fi
 
+# 正式生产统一使用固定的 HELAC 积分参数；测试模式单独收缩。
 if [ "$FAST_TEST" -eq 1 ]; then
-    PREUNW=3000
-    UNWEVT=100
-    NMC=20000
-    NOPT=2000
-    NOPT_STEP=2000
-    NOPT_LIM=20000
-fi
-
-# Validate unweighted event target
-if ! [[ "$UNWEVT" =~ ^[0-9]+$ ]] || [ "$UNWEVT" -le 0 ]; then
-    echo "Error: --unwevt must be a positive integer"
-    exit 1
+    if [ "$UNWEVT_OVERRIDE" -eq 0 ]; then
+        UNWEVT=100
+    fi
+    GENER=0
+    if ! [[ "$UNWEVT" =~ ^[0-9]+$ ]] || [ "$UNWEVT" -le 0 ]; then
+        echo "Error: --unwevt must be a positive integer"
+        exit 1
+    fi
+    if [ "$UNWEVT" -ge 100000 ]; then
+        NMC="$UNWEVT"
+    else
+        NMC=100000
+    fi
+    PREUNW=$(( NMC / 10 ))
+    NOPT=$(( NMC / 10 ))
+    NOPT_STEP=$(( NMC / 10 ))
+    NOPT_LIM=$(( NMC ))
+else
+    GENER=0
+    UNWEVT=100000
+    PREUNW=500000
+    NMC=5000000
+    NOPT=500000
+    NOPT_STEP=500000
+    NOPT_LIM=5000000
 fi
 
 echo "=============================================="
@@ -369,8 +430,14 @@ echo "Min pT (conia): $MIN_PT_CONIA GeV"
 echo "Min pT (bonia): $MIN_PT_BONIA GeV"
 echo "Min pT (q):     $MIN_PT_Q GeV"
 echo "Unw. events:    $UNWEVT"
+echo "Generator:      PHEGAS (gener=${GENER})"
+echo "preunw:         $PREUNW"
+echo "nmc:            $NMC"
+echo "nopt:           $NOPT"
+echo "nopt_step:      $NOPT_STEP"
+echo "noptlim:        $NOPT_LIM"
 if [ "$FAST_TEST" -eq 1 ]; then
-    echo "Mode:           FAST TEST (integration cuts reduced)"
+    echo "Mode:           FAST TEST"
 fi
 echo "Output dir:     $OUTPUT_DIR"
 echo "=============================================="
@@ -428,6 +495,7 @@ set nmc = ${NMC}
 set nopt = ${NOPT}
 set nopt_step = ${NOPT_STEP}
 set noptlim = ${NOPT_LIM}
+set gener = ${GENER}
 set seed = ${MY_SEED}
 set minptconia = ${MIN_PT_CONIA}d0
 set minptbonia = ${MIN_PT_BONIA}d0
@@ -439,10 +507,8 @@ launch
 exit
 EOF
 
-# Copy user.inp if exists
-if [ -f "../input_templates/user.inp" ]; then
-    cp ../input_templates/user.inp input/user.inp
-fi
+# 强制同步 runtime user.inp，避免静态模板中的旧积分参数覆盖掉当前作业设置。
+prepare_runtime_user_inp "$(pwd)"
 
 echo "Running HELAC-Onia..."
 ./ho_cluster < run_config.ho | tee ../helac_run.log
@@ -476,6 +542,13 @@ fi
 
 echo "Found LHE file: $LHE_FILE"
 
+RAW_EVENT_COUNT=$(count_lhe_events "${LHE_FILE}")
+echo "[INFO] 原始 LHE 事件数: ${RAW_EVENT_COUNT}"
+if (( RAW_EVENT_COUNT <= 0 )); then
+    echo "[ERROR] HELAC 生成的原始 LHE 不包含任何 <event>，终止上传空文件"
+    exit 1
+fi
+
 # workbook_v2 要求在 LHE 生成后单独调用 converter 完成 PDG 转换。
 FINAL_LHE_FILE="${LHE_FILE}"
 PY8_ONIA_CONFIG="${WORKDIR}/py8_onia_user.inp"
@@ -485,8 +558,14 @@ if write_py8_onia_config "${POOL_NAME}" "${PY8_ONIA_CONFIG}" && build_lhe_conver
     echo "[INFO] Running lhe_pythia6_pythia8 converter..."
     if "${WORKDIR}/lhe_pythia6_pythia8" "${LHE_FILE}" "${PY8_ONIA_CONFIG}" "${CONVERTED_LHE_FILE}"; then
         if [[ -f "${CONVERTED_LHE_FILE}" ]]; then
-            FINAL_LHE_FILE="${CONVERTED_LHE_FILE}"
-            echo "[INFO] Converted LHE ready: ${FINAL_LHE_FILE}"
+            CONVERTED_EVENT_COUNT=$(count_lhe_events "${CONVERTED_LHE_FILE}")
+            echo "[INFO] 转换后 LHE 事件数: ${CONVERTED_EVENT_COUNT}"
+            if (( CONVERTED_EVENT_COUNT > 0 )); then
+                FINAL_LHE_FILE="${CONVERTED_LHE_FILE}"
+                echo "[INFO] Converted LHE ready: ${FINAL_LHE_FILE}"
+            else
+                echo "[WARN] 转换后 LHE 不包含任何 <event>，回退到原始 LHE"
+            fi
         fi
     else
         echo "[WARN] LHE converter failed, fallback to original LHE"
@@ -496,6 +575,13 @@ elif [[ -n "${PY8_LHE_FILE}" && -f "${PY8_LHE_FILE}" ]]; then
     echo "[INFO] Reusing HELAC generated *_py8.lhe: ${FINAL_LHE_FILE}"
 else
     echo "[WARN] No standalone converter available, fallback to original LHE"
+fi
+
+FINAL_EVENT_COUNT=$(count_lhe_events "${FINAL_LHE_FILE}")
+echo "[INFO] 最终待上传 LHE 事件数: ${FINAL_EVENT_COUNT}"
+if (( FINAL_EVENT_COUNT <= 0 )); then
+    echo "[ERROR] 最终 LHE 不包含任何 <event>，拒绝上传空文件"
+    exit 1
 fi
 
 if [[ -f "${OCTET_PDG_TOOL}" ]] && grep -q "\<9900" "${FINAL_LHE_FILE}"; then

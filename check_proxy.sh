@@ -105,25 +105,41 @@ init_proxy() {
 
 copy_proxy() {
     msg_info "Copying proxy to persistent location..."
-    
-    local source_proxy=""
-    source_proxy=$(resolve_proxy_path) || true
 
-    if [[ -z "${source_proxy}" || ! -f "${source_proxy}" ]]; then
-        msg_error "Source proxy not found in X509_USER_PROXY, ${PROXY_DST} or ${PROXY_SRC}"
+    local source_proxy=""
+
+    # 优先从 /tmp 获取最新创建的 proxy（voms-proxy-init 的默认位置）
+    if [[ -f "${PROXY_SRC}" ]]; then
+        source_proxy="${PROXY_SRC}"
+    elif [[ -n "${X509_USER_PROXY:-}" && -f "${X509_USER_PROXY}" ]]; then
+        source_proxy="${X509_USER_PROXY}"
+    elif [[ -f "${PROXY_DST}" ]]; then
+        # 只有当没有其他可用 proxy 时才使用 AFS 上的
+        source_proxy="${PROXY_DST}"
+    else
+        msg_error "Source proxy not found in ${PROXY_SRC}, X509_USER_PROXY or ${PROXY_DST}"
         return 1
     fi
 
-    if [[ "${source_proxy}" == "${PROXY_DST}" ]]; then
-        chmod 600 "$PROXY_DST"
-        msg_ok "Persistent proxy already available: $PROXY_DST"
-        return 0
+    # 检查 proxy 是否有效且未过期
+    if ! voms-proxy-info -file "${source_proxy}" --exists &>/dev/null; then
+        msg_error "Source proxy is not valid: ${source_proxy}"
+        return 1
     fi
 
+    local timeleft
+    timeleft=$(voms-proxy-info -file "${source_proxy}" --timeleft 2>/dev/null || echo "0")
+    if [[ $timeleft -le 0 ]]; then
+        msg_error "Source proxy has expired: ${source_proxy}"
+        return 1
+    fi
+
+    # 总是复制，确保 AFS 上是最新的
     cp "${source_proxy}" "$PROXY_DST"
     chmod 600 "$PROXY_DST"
-    
-    msg_ok "Proxy copied to: $PROXY_DST"
+
+    local hours_left=$((timeleft / 3600))
+    msg_ok "Proxy copied to: $PROXY_DST (${hours_left}h remaining)"
 }
 
 test_xrootd() {
