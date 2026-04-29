@@ -55,7 +55,6 @@ process.load('Configuration.StandardSequences.Services_cff')
 process.load('SimGeneral.HepPDTESSource.pythiapdt_cfi')
 process.load('FWCore.MessageService.MessageLogger_cfi')
 process.load('Configuration.EventContent.EventContent_cff')
-process.load('SimGeneral.MixingModule.mixNoPU_cfi')
 process.load('Configuration.StandardSequences.GeometryRecoDB_cff')
 process.load('Configuration.StandardSequences.GeometrySimDB_cff')
 process.load('Configuration.StandardSequences.MagneticField_cff')
@@ -148,7 +147,6 @@ from IOMC.EventVertexGenerators.VtxSmearedParameters_cfi import (
 # Configure for HepMC input
 # MCFileSource registers an edm::HepMCProduct with module label "source" and
 # instance label "generator" (see EventContentAnalyzer debug above).
-process.genParticles.src = cms.InputTag("source", "generator")
 VtxSmearedCommon.src = cms.InputTag("source", "generator")
 
 process.VtxSmeared = cms.EDProducer("BetafuncEvtVtxGenerator",
@@ -172,9 +170,6 @@ process.schedule = cms.Schedule(
     process.RAWSIMoutput_step
 )
 
-from PhysicsTools.PatAlgos.tools.helpers import associatePatAlgosToolsTask
-associatePatAlgosToolsTask(process)
-
 # Multithreading
 process.options.numberOfThreads = options.nThreads
 process.options.numberOfStreams = options.nThreads
@@ -183,32 +178,28 @@ process.options.numberOfStreams = options.nThreads
 from Configuration.DataProcessing.Utils import addMonitoring
 process = addMonitoring(process)
 
-# Fix for HepMC input - remove LHCTransport if present
-if hasattr(process, 'LHCTransport'):
-    del process.LHCTransport
-print("[config] LHCTransport present after cleanup:", hasattr(process, 'LHCTransport'))
+# Keep the standard transport module from the Run3 GEN-SIM sequence.
+print("[config] LHCTransport present after standard cleanup:", hasattr(process, 'LHCTransport'))
 
-# Ensure g4SimHits reads from the MCFileSource product
-if hasattr(process.g4SimHits, 'LHCTransport'):
-    process.g4SimHits.LHCTransport = False
-if hasattr(process.g4SimHits, 'theLHCTlinkTag'):
-    process.g4SimHits.theLHCTlinkTag = cms.InputTag('source', 'generator')
-if hasattr(process.g4SimHits.Generator, 'LHCTransport'):
-    process.g4SimHits.Generator.LHCTransport = False
-if hasattr(process.g4SimHits.Generator, 'theLHCTlinkTag'):
-    process.g4SimHits.Generator.theLHCTlinkTag = cms.InputTag('source', 'generator')
-process.g4SimHits.Generator.HepMCProductLabel = cms.InputTag('source', 'generator')
-print("[config] g4SimHits HepMCProductLabel:", process.g4SimHits.Generator.HepMCProductLabel)
-if hasattr(process.g4SimHits.Generator, 'LHCTransport'):
-    print("[config] g4SimHits Generator LHCTransport flag:", process.g4SimHits.Generator.LHCTransport)
+# Keep the standard GEN-SIM HepMC chain:
+# source:generator -> VtxSmeared -> generatorSmeared -> genParticles / g4SimHits
+if hasattr(process.g4SimHits, 'HepMCProductLabel'):
+    process.g4SimHits.HepMCProductLabel = cms.InputTag('generatorSmeared')
+if hasattr(process.g4SimHits.Generator, 'HepMCProductLabel'):
+    process.g4SimHits.Generator.HepMCProductLabel = cms.InputTag('generatorSmeared')
+if hasattr(process, 'genParticles'):
+    process.genParticles.src = cms.InputTag('generatorSmeared')
+if hasattr(process.g4SimHits, 'HepMCProductLabel'):
+    print("[config] g4SimHits HepMCProductLabel:", process.g4SimHits.HepMCProductLabel)
+if hasattr(process.g4SimHits.Generator, 'HepMCProductLabel'):
+    print("[config] g4SimHits.Generator HepMCProductLabel:", process.g4SimHits.Generator.HepMCProductLabel)
 
 # Debug: optionally dump event content only
 if options.debugDump:
-    print("[debugDump] g4SimHits HepMCProductLabel:", process.g4SimHits.Generator.HepMCProductLabel)
-    if hasattr(process.g4SimHits, 'theLHCTlinkTag'):
-        print("[debugDump] g4SimHits theLHCTlinkTag:", process.g4SimHits.theLHCTlinkTag)
-    if hasattr(process.g4SimHits.Generator, 'theLHCTlinkTag'):
-        print("[debugDump] g4SimHits.Generator theLHCTlinkTag:", process.g4SimHits.Generator.theLHCTlinkTag)
+    if hasattr(process.g4SimHits, 'HepMCProductLabel'):
+        print("[debugDump] g4SimHits HepMCProductLabel:", process.g4SimHits.HepMCProductLabel)
+    if hasattr(process.g4SimHits.Generator, 'HepMCProductLabel'):
+        print("[debugDump] g4SimHits.Generator HepMCProductLabel:", process.g4SimHits.Generator.HepMCProductLabel)
     print("[debugDump] g4SimHits.Generator PSets:\n", process.g4SimHits.Generator.dumpPython())
     print("[debugDump] Does g4SimHits dump reference LHCTransport?:", "LHCTransport" in process.g4SimHits.dumpPython())
     for line in process.g4SimHits.dumpPython().splitlines():
