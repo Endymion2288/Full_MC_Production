@@ -42,8 +42,6 @@ REQUIRED_FILES = (
     "processing/templates/summary.sub",
     "processing/templates/summary.sh",
     "common/cmssw_configs/hepmc_to_GENSIM.py",
-    "common/cmssw_configs/ntuple_jjp_cfg.py",
-    "common/cmssw_configs/ntuple_jup_cfg.py",
 )
 
 REQUIRED_COMMANDS = (

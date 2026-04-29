@@ -406,11 +406,11 @@ NTUPLECFG
                 source /cvmfs/cms.cern.ch/cmsset_default.sh
                 export SCRAM_ARCH=el9_amd64_gcc12
                 cd ${PWD}
-                scramv1 project CMSSW CMSSW_14_0_18
-                cd CMSSW_14_0_18/src
+                scramv1 project CMSSW CMSSW_15_0_15
+                cd CMSSW_15_0_15/src
                 eval \$(scramv1 runtime -sh)
                 cd ${PWD}
-                echo 'CMSSW_14 environment ready'
+                echo 'CMSSW_15 environment ready'
                 ls -la MINIAOD.root
             " 2>&1 | tee ntuple.log
         

@@ -161,7 +161,7 @@ int main(int argc, char* argv[]) {
         cerr << "  minPhiPt    : Minimum phi pT in GeV (default: 0)" << endl;
         cerr << "  minMuonPt   : Minimum muon pT in GeV (default: 2.5)" << endl;
         cerr << "  maxMuonEta  : Maximum muon |eta| (default: 2.4)" << endl;
-        cerr << "  maxRetry    : Maximum hadronization retries (default: 1000)" << endl;
+        cerr << "  maxRetry    : Maximum hadronization retries (default: 5000)" << endl;
         cerr << "\nExample:" << endl;
         cerr << "  ./shower_sps 2jpsi.lhe jjp_sps.hepmc 1000 3.0 2.5 2.4 1000" << endl;
         return 1;
@@ -173,7 +173,7 @@ int main(int argc, char* argv[]) {
     double minPhiPt = (argc > 4) ? atof(argv[4]) : 0.0;
     double minMuonPt = (argc > 5) ? atof(argv[5]) : 2.5;
     double maxMuonEta = (argc > 6) ? atof(argv[6]) : 2.4;
-    int maxRetry = (argc > 7) ? atoi(argv[7]) : 1000;
+    int maxRetry = (argc > 7) ? atoi(argv[7]) : 5000;
     
     cout << "\n====== SPS Phi-Enriched Shower Processing ======" << endl;
     cout << "Mode:         SPS (MPI disabled)" << endl;

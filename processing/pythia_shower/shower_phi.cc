@@ -193,7 +193,7 @@ int main(int argc, char* argv[]) {
         cerr << "  minPhiPt    : Minimum phi pT in GeV (default: 0)" << endl;
         cerr << "  minMuonPt   : Minimum muon pT in GeV (default: 2.5)" << endl;
         cerr << "  maxMuonEta  : Maximum muon |eta| (default: 2.4)" << endl;
-        cerr << "  maxRetry    : Maximum hadronization retries (default: 1000)" << endl;
+        cerr << "  maxRetry    : Maximum hadronization retries (default: 5000)" << endl;
         cerr << "  requireLheGluon : 1/true 表示要求 phi 可追溯到 LHE 硬过程胶子" << endl;
         cerr << "\nExample:" << endl;
         cerr << "  ./shower_phi jpsi_jpsi.lhe phi_enriched.hepmc 1000 3.0 2.5 2.4 1000" << endl;
@@ -206,7 +206,7 @@ int main(int argc, char* argv[]) {
     double minPhiPt = (argc > 4) ? atof(argv[4]) : 0.0;
     double minMuonPt = (argc > 5) ? atof(argv[5]) : 2.5;
     double maxMuonEta = (argc > 6) ? atof(argv[6]) : 2.4;
-    int maxRetry = (argc > 7) ? atoi(argv[7]) : 1000;
+    int maxRetry = (argc > 7) ? atoi(argv[7]) : 5000;
     bool requireLheGluon = false;
     if (argc > 8) {
         string modeArg = argv[8];

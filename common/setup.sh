@@ -22,7 +22,7 @@ export CMSSW_CONFIGS_DIR="${COMMON_DIR}/cmssw_configs"
 
 # CMSSW 安装默认走 CVMFS，本地若有其他路径可在外部覆盖环境变量
 export CMSSW_12_BASE="${CMSSW_12_BASE:-/cvmfs/cms.cern.ch/el8_amd64_gcc10/cms/cmssw/CMSSW_12_4_14}"
-export CMSSW_14_BASE="${CMSSW_14_BASE:-/cvmfs/cms.cern.ch/el9_amd64_gcc12/cms/cmssw/CMSSW_14_0_18}"
+export CMSSW_15_BASE="${CMSSW_15_BASE:-/cvmfs/cms.cern.ch/el9_amd64_gcc12/cms/cmssw/CMSSW_15_0_15}"
 
 # T2_CN_Beijing XRootD storage paths
 export EOS_HOST="cceos.ihep.ac.cn"
@@ -83,23 +83,23 @@ setup_cmssw12() {
     msg_ok "CMSSW_12_4_14 environment ready (${CMSSW_VERSION})"
 }
 
-# Function to setup CMSSW 14 environment (for Ntuple)
-setup_cmssw14() {
-    msg_info "Setting up CMSSW_14_0_18 environment..."
+# Function to setup CMSSW 15 environment (for Ntuple)
+setup_cmssw15() {
+    msg_info "Setting up CMSSW_15_0_15 environment..."
     
-    if [ ! -d "${CMSSW_14_BASE}/src" ]; then
-        msg_error "CMSSW_14_0_18 not found at ${CMSSW_14_BASE}"
+    if [ ! -d "${CMSSW_15_BASE}/src" ]; then
+        msg_error "CMSSW_15_0_15 not found at ${CMSSW_15_BASE}"
         return 1
     fi
     
     setup_cms_base
     
-    cd "${CMSSW_14_BASE}/src"
+    cd "${CMSSW_15_BASE}/src"
     eval $(scramv1 runtime -sh)
     cd - > /dev/null
     
-    export CMSSW_ACTIVE="${CMSSW_14_BASE}"
-    msg_ok "CMSSW_14_0_18 environment ready (${CMSSW_VERSION})"
+    export CMSSW_ACTIVE="${CMSSW_15_BASE}"
+    msg_ok "CMSSW_15_0_15 environment ready (${CMSSW_VERSION})"
 }
 
 # Function to setup HELAC-Onia environment (requires cmssw-el7 container)
@@ -211,7 +211,9 @@ get_lhe_file() {
 if [ "$1" = "--cmssw12" ]; then
     setup_cmssw12
 elif [ "$1" = "--cmssw14" ]; then
-    setup_cmssw14
+    setup_cmssw15
+elif [ "$1" = "--cmssw15" ]; then
+    setup_cmssw15
 elif [ "$1" = "--helac" ]; then
     setup_helac
 elif [ "$1" = "--shower" ]; then
@@ -222,7 +224,7 @@ fi
 
 # Export functions for use in scripts
 export -f msg_info msg_ok msg_warn msg_error
-export -f setup_cms_base setup_cmssw12 setup_cmssw14 setup_helac
+export -f setup_cms_base setup_cmssw12 setup_cmssw15 setup_helac
 export -f setup_pythia_shower ensure_eos_dirs get_lhe_file
 export -f make_remote_dir stage_out
 

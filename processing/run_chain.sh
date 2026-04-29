@@ -32,7 +32,7 @@ cleanup_on_exit() {
         rm -f "${WORKDIR}"/ntuple_*.root 2>/dev/null || true
         rm -f "${WORKDIR}"/.bash_history 2>/dev/null || true
         rm -f "${WORKDIR}"/.viminfo 2>/dev/null || true
-        rm -rf "${WORKDIR}"/CMSSW_14_0_18 2>/dev/null || true
+        rm -rf "${WORKDIR}"/CMSSW_15_0_15 2>/dev/null || true
         echo "[INFO] Cleanup done"
     fi
     exit ${exit_code}
@@ -61,7 +61,7 @@ fi
 
 # CMSSW paths (prefer node CVMFS installs; override via env if needed)
 CMSSW_12_BASE="${CMSSW_12_BASE:-/cvmfs/cms.cern.ch/el8_amd64_gcc10/cms/cmssw/CMSSW_12_4_14}"
-CMSSW_14_BASE="${CMSSW_14_BASE:-/cvmfs/cms.cern.ch/el9_amd64_gcc12/cms/cmssw/CMSSW_14_0_18}"
+CMSSW_15_BASE="${CMSSW_15_BASE:-/cvmfs/cms.cern.ch/el9_amd64_gcc12/cms/cmssw/CMSSW_15_0_15}"
 
 # T2_CN_Beijing XRootD storage paths
 EOS_HOST="cceos.ihep.ac.cn"
@@ -535,9 +535,9 @@ setup_cmssw12() {
     msg_ok "CMSSW environment: ${CMSSW_VERSION}"
 }
 
-# Ensure CMSSW_14 project exists in workdir (created on demand from CVMFS release)
-ensure_cmssw14_project() {
-    local project_dir="${WORKDIR}/CMSSW_14_0_18"
+# Ensure CMSSW_15 project exists in workdir (created on demand from CVMFS release)
+ensure_cmssw15_project() {
+    local project_dir="${WORKDIR}/CMSSW_15_0_15"
     
     if [[ -d "${project_dir}/src" ]]; then
         echo "${project_dir}"
@@ -545,20 +545,20 @@ ensure_cmssw14_project() {
     fi
     
     # Use stderr for info messages to avoid polluting function return value
-    msg_info "Creating CMSSW_14_0_18 project from CVMFS in el9 container..." >&2
+    msg_info "Creating CMSSW_15_0_15 project from CVMFS in el9 container..." >&2
     
-    local tmp_script=$(mktemp --suffix=_create_cmssw14.sh)
+    local tmp_script=$(mktemp --suffix=_create_cmssw15.sh)
     cat > "${tmp_script}" << CREATEEOF
 #!/bin/bash
 set -e
 source /cvmfs/cms.cern.ch/cmsset_default.sh
 export SCRAM_ARCH=el9_amd64_gcc12
 cd "${WORKDIR}"
-scramv1 project CMSSW CMSSW_14_0_18
+scramv1 project CMSSW CMSSW_15_0_15
 CREATEEOF
     chmod +x "${tmp_script}"
     
-    run_logged "apptainer_create_CMSSW_14_0_18" apptainer exec \
+    run_logged "apptainer_create_CMSSW_15_0_15" apptainer exec \
         --bind /cvmfs:/cvmfs \
         --bind /tmp:/tmp \
         --bind "${WORKDIR}:${WORKDIR}" \
@@ -569,24 +569,24 @@ CREATEEOF
     rm -f "${tmp_script}"
     
     if [[ $rc -ne 0 ]]; then
-        msg_error "Failed to create CMSSW_14_0_18 project" >&2
+        msg_error "Failed to create CMSSW_15_0_15 project" >&2
         return 1
     fi
     
     echo "${project_dir}"
 }
 
-setup_cmssw14() {
-    msg_info "Setting up CMSSW_14_0_18..."
+setup_cmssw15() {
+    msg_info "Setting up CMSSW_15_0_15..."
     
     # Create project on demand if needed
     local base_path
-    base_path=$(ensure_cmssw14_project) || return 1
-    export CMSSW_14_BASE="${base_path}"
+    base_path=$(ensure_cmssw15_project) || return 1
+    export CMSSW_15_BASE="${base_path}"
 
-    # Note: CMSSW_14 is built in el9 container, setup happens in container too
+    # Note: CMSSW_15 is built in el9 container, setup happens in container too
     source /cvmfs/cms.cern.ch/cmsset_default.sh
-    # Force el9 architecture for CMSSW_14
+    # Force el9 architecture for CMSSW_15
     export SCRAM_ARCH=el9_amd64_gcc12
     cd "${base_path}/src"
     eval $(scramv1 runtime -sh)
@@ -594,7 +594,7 @@ setup_cmssw14() {
     msg_ok "CMSSW environment: ${CMSSW_VERSION}"
 }
 
-# EL9 container path for CMSSW_14
+# EL9 container path for CMSSW_15
 EL9_CONTAINER="/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
 
 # Run command inside el9 container using apptainer
@@ -625,17 +625,11 @@ SCRIPT_HEADER
     return ${rc}
 }
 
-run_cmsrun_cmssw14() {
+run_cmsrun_cmssw15() {
     local cfg="$1"
     shift
     
-    msg_info "Running cmsRun in el9 container for CMSSW_14..."
-    
-    local script_content="
-cd \"${CMSSW_14_BASE}/src\"
-eval \$(scramv1 runtime -sh)
-cmsRun \"${cfg}\" \"\$@\"
-"
+    msg_info "Running cmsRun in el9 container for CMSSW_15..."
     
     # Build the full command with arguments
     local tmp_script=$(mktemp --suffix=_cmsrun.sh)
@@ -644,7 +638,7 @@ cmsRun \"${cfg}\" \"\$@\"
 set -e
 source /cvmfs/cms.cern.ch/cmsset_default.sh
 export SCRAM_ARCH=el9_amd64_gcc12
-cd "${CMSSW_14_BASE}/src"
+cd "${CMSSW_15_BASE}/src"
 eval \$(scramv1 runtime -sh)
 cmsRun "${cfg}" $@
 SCRIPT_EOF
@@ -689,14 +683,14 @@ ensure_voms_proxy() {
     msg_warn "No valid VOMS proxy detected. If DIGI premix download fails, run: voms-proxy-init -voms cms -valid 192:00"
 }
 
-prepare_cmssw14_from_package() {
+prepare_cmssw15_from_package() {
     local analysis="$1"
     local pkg=""
 
     case "${analysis}" in
         "JJP") pkg="${PACKAGES_DIR}/jjp_code.tar.gz" ;;
         "JUP") pkg="${PACKAGES_DIR}/jup_code.tar.gz" ;;
-        *) msg_error "Unknown analysis type for CMSSW_14 build: ${analysis}"; return 1 ;;
+        *) msg_error "Unknown analysis type for CMSSW_15 build: ${analysis}"; return 1 ;;
     esac
 
     if [[ ! -d "${PACKAGES_DIR}" ]]; then
@@ -708,24 +702,24 @@ prepare_cmssw14_from_package() {
         return 1
     fi
 
-    local project_dir="${WORKDIR}/CMSSW_14_0_18"
-    export CMSSW_14_BASE="${project_dir}"
+    local project_dir="${WORKDIR}/CMSSW_15_0_15"
+    export CMSSW_15_BASE="${project_dir}"
     
     if [[ ! -d "${project_dir}/src" ]]; then
-        msg_info "Creating CMSSW_14_0_18 project in el9 container at ${project_dir}..."
+        msg_info "Creating CMSSW_15_0_15 project in el9 container at ${project_dir}..."
         
-        local tmp_script=$(mktemp --suffix=_create_cmssw14.sh)
+        local tmp_script=$(mktemp --suffix=_create_cmssw15.sh)
         cat > "${tmp_script}" << CREATEEOF
 #!/bin/bash
 set -e
 source /cvmfs/cms.cern.ch/cmsset_default.sh
 export SCRAM_ARCH=el9_amd64_gcc12
 cd "${WORKDIR}"
-scramv1 project CMSSW CMSSW_14_0_18
+scramv1 project CMSSW CMSSW_15_0_15
 CREATEEOF
         chmod +x "${tmp_script}"
         
-        run_logged "apptainer_create_CMSSW_14_0_18_pkg" apptainer exec \
+        run_logged "apptainer_create_CMSSW_15_0_15_pkg" apptainer exec \
             --bind /cvmfs:/cvmfs \
             --bind /tmp:/tmp \
             --bind "${WORKDIR}:${WORKDIR}" \
@@ -734,8 +728,7 @@ CREATEEOF
         rm -f "${tmp_script}"
     fi
 
-    # Check for correct package structure based on analysis type
-    # Note: TPS_Onia2MuMu uses underscore (not hyphen) for Python import compatibility
+    # The worker package is expected under <channel>/TPS_Onia2MuMu/.
     local pkg_check_dir=""
     case "${analysis}" in
         "JJP") pkg_check_dir="${project_dir}/src/JJPNtupleMaker/TPS_Onia2MuMu" ;;
@@ -751,7 +744,7 @@ CREATEEOF
     if [[ ! -f "${stamp}" ]]; then
         msg_info "Compiling ntuple code for ${analysis} in el9 container..."
         
-        local tmp_script=$(mktemp --suffix=_build_cmssw14.sh)
+        local tmp_script=$(mktemp --suffix=_build_cmssw15.sh)
         cat > "${tmp_script}" << BUILDEOF
 #!/bin/bash
 set -e
@@ -773,8 +766,29 @@ BUILDEOF
         
         touch "${stamp}"
     else
-        msg_info "Reusing existing CMSSW_14_0_18 build for ${analysis}"
+        msg_info "Reusing existing CMSSW_15_0_15 build for ${analysis}"
     fi
+}
+
+ntuple_package_dir() {
+    case "$1" in
+        "JJP") echo "${CMSSW_15_BASE}/src/JJPNtupleMaker/TPS_Onia2MuMu" ;;
+        "JUP") echo "${CMSSW_15_BASE}/src/JUPNtupleMaker/TPS_Onia2MuMu" ;;
+        *) return 1 ;;
+    esac
+}
+
+ntuple_analysis_mode() {
+    case "$1" in
+        "JJP") echo "JpsiJpsiPhi" ;;
+        "JUP") echo "JpsiUpsPhi" ;;
+        *) return 1 ;;
+    esac
+}
+
+ntuple_cfg_path() {
+    local package_dir="$1"
+    echo "${package_dir}/test/ConfFile_cfg.py"
 }
 
 # ==============================================================================
@@ -852,11 +866,11 @@ run_shower() {
         if [[ "$normalized_mode" == "phi_mpi_off" ]]; then
             # workbook_v2 默认模式：关闭 MPI，循环 hadronize 找 phi。
             msg_info "Running phi-enriched mode-1 shower (MPI off)..."
-            run_logged "shower_sps_${i}" ./shower_sps "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 1000
+            run_logged "shower_sps_${i}" ./shower_sps "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 5000
         elif [[ "$normalized_mode" == "phi_mpi_on_gluon" ]]; then
             # 扩展模式：开启 MPI，并交给 shower_phi 处理来源判定。
             msg_info "Running phi-enriched mode-2 shower (MPI on)..."
-            run_logged "shower_phi_${i}" ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 1000 1
+            run_logged "shower_phi_${i}" ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 5000 1
         else
             # 普通 shower。
             run_logged "shower_normal_${i}" ./shower_normal "${lhe_file}" "${hepmc_output}" "${shower_events}" 2.5 2.4 1000
@@ -1058,33 +1072,42 @@ run_ntuple() {
     
     NTUPLE_OUTPUT="${WORKDIR}/output_ntuple.root"
     MINIAOD_OUTPUT="${MINIAOD_OUTPUT:-${WORKDIR}/output_MINIAOD.root}"
+    local analysis_mode=""
+    local package_dir=""
+    local cfg_path=""
 
     if [[ ! -f "${MINIAOD_OUTPUT}" ]]; then
         msg_error "Ntuple input missing: ${MINIAOD_OUTPUT}"
         return 1
     fi
 
-    prepare_cmssw14_from_package "${ANALYSIS_TYPE}" || return 1
-    setup_cmssw14
-    
-    if [[ "${ANALYSIS_TYPE}" == "JJP" ]]; then
-        msg_info "Running JJP Ntuple analysis..."
-        run_cmsrun_cmssw14 "${CMSSW_CONFIGS_DIR}/ntuple_jjp_cfg.py" \
-            inputFiles="file:${MINIAOD_OUTPUT}" \
-            outputFile="${NTUPLE_OUTPUT}" \
-            runOnMC=True \
-            maxEvents=-1
-    elif [[ "${ANALYSIS_TYPE}" == "JUP" ]]; then
-        msg_info "Running JUP Ntuple analysis..."
-        run_cmsrun_cmssw14 "${CMSSW_CONFIGS_DIR}/ntuple_jup_cfg.py" \
-            inputFiles="file:${MINIAOD_OUTPUT}" \
-            outputFile="${NTUPLE_OUTPUT}" \
-            runOnMC=True \
-            maxEvents=-1
-    else
+    prepare_cmssw15_from_package "${ANALYSIS_TYPE}" || return 1
+    setup_cmssw15
+
+    analysis_mode=$(ntuple_analysis_mode "${ANALYSIS_TYPE}") || {
         msg_error "Unknown analysis type: ${ANALYSIS_TYPE}"
         return 1
+    }
+    package_dir=$(ntuple_package_dir "${ANALYSIS_TYPE}") || {
+        msg_error "Unknown analysis type: ${ANALYSIS_TYPE}"
+        return 1
+    }
+    cfg_path=$(ntuple_cfg_path "${package_dir}")
+
+    if [[ ! -f "${cfg_path}" ]]; then
+        msg_error "Ntuple config missing: ${cfg_path}"
+        msg_error "Rebuild the ${ANALYSIS_TYPE} worker package with TPS_Onia2MuMu/test/ConfFile_cfg.py included."
+        return 1
     fi
+
+    msg_info "Running ${ANALYSIS_TYPE} Ntuple analysis via ${cfg_path}..."
+    run_cmsrun_cmssw15 "${cfg_path}" \
+        inputFiles="file:${MINIAOD_OUTPUT}" \
+        outputFile="${NTUPLE_OUTPUT}" \
+        runOnMC=True \
+        era=Run2022 \
+        analysisMode="${analysis_mode}" \
+        maxEvents=-1
     
     if [[ ! -f "${NTUPLE_OUTPUT}" ]]; then
         msg_error "Ntuple step failed: ${NTUPLE_OUTPUT} not created"
