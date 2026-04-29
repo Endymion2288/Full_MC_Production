@@ -20,7 +20,7 @@ MY_SEED=100
 PROCESS_STRING=""
 MIN_PT_CONIA=6.0
 MIN_PT_BONIA=4.0
-MIN_PT_Q=4.0
+MIN_PT_Q=0.0
 WORKDIR=$(pwd)
 OUTPUT_DIR=""
 # workbook_v2 / 用户补充要求：
@@ -46,7 +46,7 @@ HEPMC_PREFIX="${WORKDIR}/HepMC/HepMC-2.06.11"
 # T2_CN_Beijing XRootD storage paths
 EOS_HOST="cceos.ihep.ac.cn"
 EOS_XRDFS_TARGET="root://${EOS_HOST}"
-EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
+EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v3"
 
 # ----------------------------------------------------------------------------
 # Helper functions
@@ -135,7 +135,7 @@ write_py8_onia_config() {
     local output_file="$2"
 
     case "$pool_name" in
-        "pool_2jpsi"|"pool_2jpsi_cs"|"pool_2jpsi_g")
+        "pool_2jpsi_cs"|"pool_2jpsi_g")
             cat > "${output_file}" << 'EOF'
 2
 443 443
@@ -352,7 +352,7 @@ generate g g > upsilon_all g"
         "pool_gg")
             PROCESS_STRING="generate g g > g g"
             ;;
-        "pool_2jpsi"|"pool_2jpsi_cs")
+        "pool_2jpsi_cs")
             PROCESS_STRING="generate g g > cc~(3S11) cc~(3S11)"
             ;;
         "pool_2jpsi_g")
@@ -364,7 +364,7 @@ generate g g > upsilon_all g"
             echo "Available pools (CSCO - recommended):"
             echo "  - pool_jpsi_CSCO_g, pool_upsilon_CSCO_g, pool_jpsi_upsilon_CSCO"
             echo "Available pools (basic):"
-            echo "  - pool_gg, pool_2jpsi, pool_2jpsi_cs, pool_2jpsi_g"
+            echo "  - pool_gg, pool_2jpsi_cs, pool_2jpsi_g"
             exit 1
             ;;
     esac

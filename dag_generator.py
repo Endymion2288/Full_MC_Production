@@ -28,10 +28,10 @@ TEST_OUTPUT_DIR = os.path.join(BASE_DIR, "tests", "generated")
 
 EOS_HOST = "cceos.ihep.ac.cn"
 EOS_XRDFS_TARGET = f"root://{EOS_HOST}"
-EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
+EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production_v3"
 EOS_BASE = f"root://{EOS_HOST}/{EOS_PATH_BASE}"
 STORAGE_SITE = "T2_CN_Beijing"
-DEFAULT_TEST_CAMPAIGNS = ("JJP_DPS2", "JUP_DPS1")
+DEFAULT_TEST_CAMPAIGNS = ("JJP_DPS2_CS", "JJP_DPS2_G", "JUP_DPS1")
 
 REQUIRED_FILES = (
     "common/octet_pdg.py",
@@ -101,7 +101,7 @@ class LHEPool:
         process_lines: Sequence[str] = (),
         min_pt_conia: float = 6.0,
         min_pt_bonia: float = 4.0,
-        min_pt_q: float = 4.0,
+        min_pt_q: float = 0.0,
         notes: str = "",
         seed_offset: int = 0,
         storage_name: Optional[str] = None,
@@ -267,6 +267,7 @@ LHE_POOLS: "OrderedDict[str, LHEPool]" = OrderedDict(
                 process_lines=("generate g g > g g",),
                 min_pt_conia=0.0,
                 min_pt_bonia=0.0,
+                min_pt_q=4.0,
                 notes="QCD 背景胶子池。",
                 seed_offset=40000,
             ),
@@ -277,9 +278,9 @@ LHE_POOLS: "OrderedDict[str, LHEPool]" = OrderedDict(
                 name="pool_2jpsi_cs",
                 description="gg -> J/psi + J/psi (born 子过程)",
                 process_lines=("generate g g > cc~(3S11) cc~(3S11)",),
-                notes="pool_2jpsi 复合池的 born 子过程。",
+                notes="double-J/psi born/color-singlet SPS 基础池。",
                 seed_offset=60000,
-                public=False,
+                public=True,
             ),
         ),
         (
@@ -288,17 +289,8 @@ LHE_POOLS: "OrderedDict[str, LHEPool]" = OrderedDict(
                 name="pool_2jpsi_g",
                 description="gg -> J/psi + J/psi + g",
                 process_lines=("generate g g > cc~(3S11) cc~(3S11) g",),
-                notes="保留为显式带胶子版本，便于后续扩展 pool_2jpsi 混合策略。",
+                notes="double-J/psi + g SPS 基础池。",
                 seed_offset=70000,
-            ),
-        ),
-        (
-            "pool_2jpsi",
-            LHEPool(
-                name="pool_2jpsi",
-                description="gg -> J/psi + J/psi 复合池",
-                variants=("pool_2jpsi_cs", "pool_2jpsi_g"),
-                notes="按子过程截面近似加权混合 born 与带额外 gluon 两种来源。",
             ),
         ),
         (
@@ -318,13 +310,23 @@ LHE_POOLS: "OrderedDict[str, LHEPool]" = OrderedDict(
 CAMPAIGNS: "OrderedDict[str, Campaign]" = OrderedDict(
     [
         (
-            "JJP_SPS",
+            "JJP_SPS_CS",
             Campaign(
-                name="JJP_SPS",
+                name="JJP_SPS_CS",
                 analysis_type="JJP",
-                inputs=("pool_2jpsi",),
+                inputs=("pool_2jpsi_cs",),
                 shower_modes=("phi_mpi_off",),
-                description="单个双 J/psi 过程做 phi-enriched shower。",
+                description="double-J/psi born/color-singlet 单源做 phi-enriched shower，不与带额外 gluon 的样本混合。",
+            ),
+        ),
+        (
+            "JJP_SPS_G",
+            Campaign(
+                name="JJP_SPS_G",
+                analysis_type="JJP",
+                inputs=("pool_2jpsi_g",),
+                shower_modes=("phi_mpi_off",),
+                description="double-J/psi + g 单源做 phi-enriched shower，不与 born 样本混合。",
             ),
         ),
         (
@@ -338,13 +340,23 @@ CAMPAIGNS: "OrderedDict[str, Campaign]" = OrderedDict(
             ),
         ),
         (
-            "JJP_DPS2",
+            "JJP_DPS2_CS",
             Campaign(
-                name="JJP_DPS2",
+                name="JJP_DPS2_CS",
                 analysis_type="JJP",
-                inputs=("pool_2jpsi", "pool_gg"),
+                inputs=("pool_2jpsi_cs", "pool_gg"),
                 shower_modes=("normal", "phi_mpi_off"),
-                description="双 J/psi 源与 gg 池混合。",
+                description="double-J/psi born 源与 gg 池混合。",
+            ),
+        ),
+        (
+            "JJP_DPS2_G",
+            Campaign(
+                name="JJP_DPS2_G",
+                analysis_type="JJP",
+                inputs=("pool_2jpsi_g", "pool_gg"),
+                shower_modes=("normal", "phi_mpi_off"),
+                description="double-J/psi + g 源与 gg 池混合。",
             ),
         ),
         (
@@ -421,9 +433,6 @@ MODE_LABELS = OrderedDict(
 
 
 def real_pool_names(pool_name: str) -> List[str]:
-    pool = LHE_POOLS[pool_name]
-    if pool.is_composite:
-        return list(pool.variants)
     return [pool_name]
 
 
@@ -823,14 +832,6 @@ class DAGBuilder:
     def allocate_input_spec(self, pool_name: str, job_index: int, usage_index: int) -> Tuple[str, List[str]]:
         """为 processing 节点分配输入引用和父节点依赖。"""
 
-        pool = LHE_POOLS[pool_name]
-        if pool.is_composite:
-            parent_jobs: List[str] = []
-            for variant in pool.variants:
-                if not self.pool_uses_existing(variant):
-                    parent_jobs.extend(self.generated_jobs_by_pool.get(variant, []))
-            return f"MIX:{pool_name}:{job_index}:{usage_index}", sorted(set(parent_jobs))
-
         if self.pool_uses_existing(pool_name):
             return f"EOS:{pool_name}:{job_index}:{usage_index}", []
 
@@ -1007,6 +1008,10 @@ def print_pools() -> None:
         print(f"- {pool.name}")
         print(f"  描述: {pool.description}")
         print(f"  过程: {pool.process_text}")
+        print(
+            f"  cuts: min_pt_conia={pool.min_pt_conia}, "
+            f"min_pt_bonia={pool.min_pt_bonia}, min_pt_q={pool.min_pt_q}"
+        )
         if pool.notes:
             print(f"  备注: {pool.notes}")
         print()

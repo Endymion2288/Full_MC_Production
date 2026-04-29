@@ -147,12 +147,12 @@ declare -A MIN_PT_BONIA=(
 )
 
 declare -A MIN_PT_Q=(
-    ["pool_jpsi_CSCO_g"]=4.0
-    ["pool_upsilon_CSCO_g"]=4.0
+    ["pool_jpsi_CSCO_g"]=0.0
+    ["pool_upsilon_CSCO_g"]=0.0
     ["pool_gg"]=4.0
-    ["pool_2jpsi_cs"]=4.0
-    ["pool_2jpsi_g"]=4.0
-    ["pool_jpsi_upsilon_CSCO"]=4.0
+    ["pool_2jpsi_cs"]=0.0
+    ["pool_2jpsi_g"]=0.0
+    ["pool_jpsi_upsilon_CSCO"]=0.0
 )
 
 echo ""
@@ -251,7 +251,7 @@ for idx in "${!SUBMITTED_POOLS[@]}"; do
     seed="${SUBMITTED_SEEDS[$idx]}"
     cluster_id="${SUBMITTED_CLUSTERS[$idx]}"
     log_file="${BASE_DIR}/log/lhe_${pool}_${seed}_${cluster_id}_0.log"
-    remote_url="root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production_v2/lhe_pools/${pool}/sample_${pool}_${seed}.lhe"
+    remote_url="root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production_v3/lhe_pools/${pool}/sample_${pool}_${seed}.lhe"
     local_copy="/tmp/xcheng/${pool}_${seed}.lhe"
 
     if [[ ! -f "${log_file}" ]]; then

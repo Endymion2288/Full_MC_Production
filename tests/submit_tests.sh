@@ -3,7 +3,8 @@
 # submit_tests.sh - 生成并提交 workbook_v2 小批量测试 DAG
 # ==============================================================================
 # 默认覆盖：
-#   - JJP_DPS2
+#   - JJP_DPS2_CS
+#   - JJP_DPS2_G
 #   - JUP_DPS1
 # 验收口径：
 #   - 代码保留全链路能力
@@ -80,7 +81,7 @@ while [[ $# -gt 0 ]]; do
 用法: $0 [选项]
 
 选项:
-  --campaign NAME        可重复指定，默认 JJP_DPS2 和 JUP_DPS1
+  --campaign NAME        可重复指定，默认 JJP_DPS2_CS、JJP_DPS2_G 和 JUP_DPS1
   --jobs N               每个 campaign 的测试 job 数，默认 1
   --max-events N         processing 节点 max-events，默认 5
   --output-dir DIR       DAG 输出目录，默认 tests/generated/<时间戳>
@@ -101,7 +102,7 @@ EOF
 done
 
 if [[ ${#CAMPAIGNS[@]} -eq 0 ]]; then
-    CAMPAIGNS=("JJP_DPS2" "JUP_DPS1")
+    CAMPAIGNS=("JJP_DPS2_CS" "JJP_DPS2_G" "JUP_DPS1")
 fi
 
 if [[ -z "${OUTPUT_DIR}" ]]; then

@@ -90,7 +90,7 @@ python3 dag_generator.py list --kind pools
 ### 校验环境
 
 ```bash
-python3 dag_generator.py validate --campaign JJP_DPS2 --scan-existing
+python3 dag_generator.py validate --campaign JJP_DPS2_CS --scan-existing
 python3 dag_generator.py validate --campaign JUP_DPS1 --scan-existing
 ```
 
@@ -142,7 +142,8 @@ python3 dag_generator.py prepare-runtime \
 
 ```bash
 python3 dag_generator.py generate-test \
-  --campaign JJP_DPS1 \
+  --campaign JJP_DPS2_CS \
+  --campaign JJP_DPS2_G \
   --campaign JUP_DPS1 \
   --jobs 1 \
   --max-events 5 \
@@ -167,7 +168,8 @@ python3 dag_generator.py generate-test \
 
 该入口默认覆盖：
 
-- `JJP_DPS2`
+- `JJP_DPS2_CS`
+- `JJP_DPS2_G`
 - `JUP_DPS1`
 
 并会先执行：
@@ -190,7 +192,8 @@ python3 dag_generator.py generate-test \
 
 ```bash
 ./tests/submit_tests.sh \
-  --campaign JJP_DPS2 \
+  --campaign JJP_DPS2_CS \
+  --campaign JJP_DPS2_G \
   --campaign JUP_DPS1 \
   --jobs 1 \
   --max-events 5 \
@@ -222,7 +225,7 @@ python3 dag_generator.py generate-test \
 - DAG 和元数据：`tests/generated/<时间戳>/`
 - 提交日志：`tests/log/`
 - HTCondor stdout/stderr/log：仓库根目录 `log/`
-- 远端物理输出：`root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production_v2/output/<campaign>/<job_id>/`
+- 远端物理输出：`root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production_v3/output/<campaign>/<job_id>/`
 
 ## shower 模式说明
 
@@ -240,9 +243,14 @@ python3 dag_generator.py generate-test \
 - `phi`、`phi_mode1`、`sps` 都会映射为 `phi_mpi_off`
 - `phi_mode2` 会映射为 `phi_mpi_on_gluon`
 
+## JJP 双 J/psi 拆分
+
+- `JJP_SPS_CS` 与 `JJP_SPS_G` 分别生产 `gg -> J/psi + J/psi` born/color-singlet 与 `gg -> J/psi + J/psi + g` 两类源，不再在 worker 端混合。
+- `JJP_DPS2_CS` 与 `JJP_DPS2_G` 分别把 `pool_2jpsi_cs`、`pool_2jpsi_g` 与 `pool_gg` 组合，输出路径按 campaign 名独立分开。
+- `pool_gg` 保留 `minptq = 4.0`；其他真实 pool，包括 `pool_jpsi_CSCO_g`、`pool_upsilon_CSCO_g`、`pool_2jpsi_cs`、`pool_2jpsi_g`、`pool_jpsi_upsilon_CSCO`，统一使用 `minptq = 0.0`。
+
 ## 当前已知限制
 
-- `pool_2jpsi` 现已在 worker 上按 `pool_2jpsi_cs` 与 `pool_2jpsi_g` 的 LHE `<init>` 截面做确定性加权抽样；若远端样例文件缺少可解析截面，脚本会回退到等权混合并打印警告。
 - 即使分析包存在，本轮小批量 Condor 验证也仍建议默认使用 `--disable-ntuple`，先把验收聚焦在 MiniAOD 与远端 stage-out。
 - `phi_mpi_on_gluon` 当前通过 Pythia 事件记录里 `status 21-29` 的 hardest-process gluon 祖先关系判定 `phi` 来源；这已经比原来的占位接口更接近 workbook 要求，但仍建议在正式大样本前做额外物理抽查。
 - `condor_submit` 目前会对 submit 模板中的 `MaxRetries` 给出“unused”警告；这不影响实际提交，但说明该字段不是 submit 描述层的生效参数，真正的重试控制仍以 DAGMan `RETRY` 为准。
@@ -251,11 +259,12 @@ python3 dag_generator.py generate-test \
 
 ```bash
 # 1. 检查代理与环境
-python3 dag_generator.py validate --campaign JJP_DPS2 --scan-existing
+python3 dag_generator.py validate --campaign JJP_DPS2_CS --scan-existing
 
 # 2. 生成小批量测试 DAG
 python3 dag_generator.py generate-test \
-  --campaign JJP_DPS2 \
+  --campaign JJP_DPS2_CS \
+  --campaign JJP_DPS2_G \
   --campaign JUP_DPS1 \
   --output-dir tests/generated/smoke \
   --output smoke.dag
