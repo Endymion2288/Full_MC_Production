@@ -576,11 +576,11 @@ if [[ "${TEST_MODE}" == "cmssw" || "${TEST_MODE}" == "full" ]]; then
                     source /cvmfs/cms.cern.ch/cmsset_default.sh
                     export SCRAM_ARCH=el9_amd64_gcc12
                     cd ${WORKDIR}
-                    scramv1 project CMSSW CMSSW_14_0_18
-                    cd CMSSW_14_0_18/src
+                    scramv1 project CMSSW CMSSW_15_0_15
+                    cd CMSSW_15_0_15/src
                     eval \$(scramv1 runtime -sh)
                     cd ${WORKDIR}
-                    echo 'CMSSW_14 environment ready in el9'
+                    echo 'CMSSW_15 environment ready in el9'
                     echo 'MINIAOD.root available:' && ls -la MINIAOD.root
                 " 2>&1 | tee ntuple.log
             

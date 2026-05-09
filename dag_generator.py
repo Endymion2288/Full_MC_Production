@@ -25,6 +25,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT_DIR = os.path.join(BASE_DIR, "generated")
 TEST_OUTPUT_DIR = os.path.join(BASE_DIR, "tests", "generated")
+TPS_ONIA2MUMU_SUBMODULE = os.path.join(BASE_DIR, "external", "TPS-Onia2MuMu")
 
 EOS_HOST = "cceos.ihep.ac.cn"
 EOS_XRDFS_TARGET = f"root://{EOS_HOST}"
@@ -42,8 +43,6 @@ REQUIRED_FILES = (
     "processing/templates/summary.sub",
     "processing/templates/summary.sh",
     "common/cmssw_configs/hepmc_to_GENSIM.py",
-    "common/cmssw_configs/ntuple_jjp_cfg.py",
-    "common/cmssw_configs/ntuple_jup_cfg.py",
 )
 
 REQUIRED_COMMANDS = (
@@ -659,7 +658,48 @@ def build_proxy_bundle(output_dir: str, proxy_path: str) -> Tuple[str, str]:
     return bundle_path, bundle_name
 
 
-def prepare_runtime_assets(output_dir: str) -> Dict[str, str]:
+def build_tpsonia2mumu_package(output_dir: str) -> Tuple[str, str]:
+    """从 git submodule 生成 worker 侧使用的 TPS-Onia2MuMu tarball。"""
+
+    if not os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
+        raise FileNotFoundError(
+            "TPS-Onia2MuMu submodule 不存在，请先执行 "
+            "`git submodule update --init --recursive`。"
+        )
+
+    package_name = "tpsonia2mumu_code.tar.gz"
+    package_path = os.path.join(output_dir, package_name)
+    source_root = TPS_ONIA2MUMU_SUBMODULE
+    arc_root = "HeavyFlavorAnalysis/TPS-Onia2MuMu"
+
+    ensure_dir(output_dir)
+    with tarfile.open(package_path, "w:gz") as archive:
+        for root, dirs, files in os.walk(source_root):
+            rel_root = os.path.relpath(root, source_root)
+            dirs[:] = [
+                entry
+                for entry in dirs
+                if entry not in {".git", "__pycache__", "crabData"}
+            ]
+
+            if rel_root == ".":
+                arc_dir = arc_root
+            else:
+                arc_dir = os.path.join(arc_root, rel_root)
+                archive.add(root, arcname=arc_dir, recursive=False)
+
+            for filename in files:
+                if filename in {".git"}:
+                    continue
+                if filename.endswith((".pyc", ".pyo", ".root")):
+                    continue
+                source_path = os.path.join(root, filename)
+                archive.add(source_path, arcname=os.path.join(arc_dir, filename), recursive=False)
+
+    return package_path, package_name
+
+
+def prepare_runtime_assets(output_dir: str, require_analysis_package: bool = False) -> Dict[str, str]:
     """生成 LHE / processing / summary 运行 bundle。"""
 
     ensure_dir(output_dir)
@@ -701,15 +741,21 @@ def prepare_runtime_assets(output_dir: str) -> Dict[str, str]:
         ),
         (os.path.join(BASE_DIR, "common", "octet_pdg.py"), "runtime/common/octet_pdg.py"),
     ]
-    for package_name in ("jjp_code.tar.gz", "jup_code.tar.gz"):
-        package_path = os.path.join(BASE_DIR, "common", "packages", package_name)
-        if os.path.exists(package_path):
-            processing_items.append(
-                (
-                    package_path,
-                    os.path.join("runtime", "common", "packages", package_name),
-                )
+    if os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
+        package_path, package_name = build_tpsonia2mumu_package(output_dir)
+        processing_items.append(
+            (
+                package_path,
+                os.path.join("runtime", "common", "packages", package_name),
             )
+        )
+        assets["tpsonia2mumu_package_path"] = package_path
+        assets["tpsonia2mumu_package_name"] = package_name
+    elif require_analysis_package:
+        raise FileNotFoundError(
+            "需要打包 TPS-Onia2MuMu，但 submodule 未初始化。"
+            "请执行 `git submodule update --init --recursive`。"
+        )
 
     processing_bundle_name = BUNDLE_NAMES["processing"]
     processing_bundle_path = os.path.join(output_dir, processing_bundle_name)
@@ -1060,8 +1106,7 @@ def validate_environment(
     print("\n包检查:")
     package_checks = [
         ("common/packages/helac_package.tar.gz", True),
-        ("common/packages/jjp_code.tar.gz", strict_analysis_packages),
-        ("common/packages/jup_code.tar.gz", strict_analysis_packages),
+        ("external/TPS-Onia2MuMu", strict_analysis_packages),
     ]
     for relative_path, required_flag in package_checks:
         path = os.path.join(BASE_DIR, relative_path)
@@ -1161,7 +1206,10 @@ def execute_generation(
             "proxy_bundle_name": BUNDLE_NAMES["proxy"],
         }
     else:
-        runtime_assets = prepare_runtime_assets(output_dir)
+        runtime_assets = prepare_runtime_assets(
+            output_dir,
+            require_analysis_package=options.enable_ntuple,
+        )
         proxy_bundle_path, proxy_bundle_name = build_proxy_bundle(output_dir, options.proxy_path)
         runtime_assets["proxy_bundle_path"] = proxy_bundle_path
         runtime_assets["proxy_bundle_name"] = proxy_bundle_name
@@ -1326,7 +1374,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument(
         "--strict-analysis-packages",
         action="store_true",
-        help="把 jjp/jup 分析包也当作硬依赖。",
+        help="把 TPS-Onia2MuMu submodule 也当作硬依赖。",
     )
 
     runtime_parser = subparsers.add_parser("prepare-runtime", help="生成 worker 运行所需的压缩包")
