@@ -1,66 +1,43 @@
 # ==============================================================================
-# processing.sub - HTCondor submit file for MC processing chain
+# processing.sub - shower/mix/CMSSW 处理节点 submit 模板
 # ==============================================================================
-# This template is used by dag_generator.py to submit processing jobs.
-# Runs the full chain: Shower -> Mix -> GEN-SIM -> RAW -> RECO -> MiniAOD -> Ntuple
-#
-# Required variables (set via DAGMan VARS):
-#   campaign   - Campaign name (e.g., JJP_DPS1)
-#   job_id     - Job identifier
-#   inputs     - Comma-separated pool:index pairs
-#   modes      - Comma-separated shower modes (normal|phi)
-#   analysis   - Analysis type (JJP or JUP)
-#   n_sources  - Number of input sources
+# 由 dag_generator.py 通过 DAGMan VARS 注入以下变量：
+#   campaign / job_id / inputs / modes / analysis / n_sources
+#   max_events / enable_ntuple / cleanup
+#   request_cpus / request_memory / request_disk
+#   processing_bundle_path / processing_bundle_name / proxy_bundle_path / proxy_bundle_name
 # ==============================================================================
 
 Universe = vanilla
 
-# Executable and arguments
-Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh
-Arguments = --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id)
+Executable = /bin/bash
+transfer_executable = False
+Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(processing_bundle_name); cd runtime/processing; bash run_chain.sh --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events $(max_events) --enable-ntuple $(enable_ntuple) --cleanup $(cleanup)'"
 
-# Input files to transfer (self-contained sandbox)
-Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/run_chain.sh, \
-					   /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/pythia_shower, \
-					   /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common
-
-# Output handling
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
 
-# Log files
-Output = log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
-Error = log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
-Log = log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
+Transfer_Input_Files = $(processing_bundle_path), $(proxy_bundle_path)
 
-# Resource requirements
-# Full chain is very resource intensive
-request_cpus = 8
-request_memory = 20GB
-request_disk = 50GB
+transfer_output_files =
 
-# Job flavor (CERN batch system)
-# "nextweek" = up to 1 week (needed for full chain)
-+JobFlavour = "nextweek"
+Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
 
-# Run in CMSSW-compatible container
+request_cpus = $(request_cpus)
+request_memory = $(request_memory)
+request_disk = $(request_disk)
+
++MaxRuntime = 604800
+
+Environment = "HOME=/srv"
+
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
 
-# Environment setup
-# Environment setup - use actual user ID for proxy path
-Environment = "HOME=/afs/cern.ch/user/x/xcheng X509_USER_PROXY=/afs/cern.ch/user/x/xcheng/x509up_u180107"
-
-# Retry configuration
-MaxRetries = 2
 OnExitHold = (ExitCode != 0)
-OnExitHoldReason = "Job exited with non-zero status"
+OnExitHoldReason = "Processing chain failed"
 OnExitHoldSubCode = 1
-
-# Periodic release of held jobs
 PeriodicRelease = (JobRunCount < 2) && (HoldReasonCode == 3)
 
-# No host OS requirement - we run inside Singularity el8 container
-# Container runs fine on AlmaLinux9 hosts
-
-# Queue single job
 Queue 1

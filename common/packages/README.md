@@ -32,44 +32,46 @@ cp helac_package.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full
 
 ## 2. jjp_code.tar.gz (Required for JJP Ntuple production)
 
-This package contains the Dev-J-J-P branch CMSSW code for J/psi + J/psi + phi analysis.
-`run_chain.sh` will unpack and compile it inside a fresh CMSSW_14_0_18 project on the worker.
+This package contains the current CMSSW code for J/psi + J/psi + phi analysis.
+`run_chain.sh` will unpack and compile it inside a fresh CMSSW_15_0_15 project on the worker.
 
 ### Contents:
-- TPS-Onia2MuMu/ (analyzer code from JJPNtupleMaker)
+- `JJPNtupleMaker/TPS_Onia2MuMu/`
+- `JJPNtupleMaker/TPS_Onia2MuMu/test/ConfFile_cfg.py` must be present
 
 ### How to create:
 
 ```bash
-cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18/src/JJPNtupleMaker
+cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_15_0_15/src
 
 # Create package with analysis code (strip git and caches)
-tar --exclude='.git' --exclude='*.root' -czf jjp_code.tar.gz TPS-Onia2MuMu/
+tar --exclude='.git' --exclude='*.root' -czf jjp_code.tar.gz JJPNtupleMaker/TPS_Onia2MuMu/
 
 # Copy to packages directory
-cp jjp_code.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common/packages/
+cp jjp_code.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common/packages/
 ```
 
 ---
 
 ## 3. jup_code.tar.gz (Required for JUP Ntuple production)
 
-This package contains the Dev-J-U-P branch CMSSW code for J/psi + Upsilon + phi analysis.
-`run_chain.sh` will unpack and compile it inside a fresh CMSSW_14_0_18 project on the worker.
+This package contains the current CMSSW code for J/psi + Upsilon + phi analysis.
+`run_chain.sh` will unpack and compile it inside a fresh CMSSW_15_0_15 project on the worker.
 
 ### Contents:
-- TPS-Onia2MuMu/ (analyzer code from JUPNtupleMaker)
+- `JUPNtupleMaker/TPS_Onia2MuMu/`
+- `JUPNtupleMaker/TPS_Onia2MuMu/test/ConfFile_cfg.py` must be present
 
 ### How to create:
 
 ```bash
-cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_14_0_18/src/JUPNtupleMaker
+cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_15_0_15/src
 
 # Create package with analysis code (strip git and caches)
-tar --exclude='.git' --exclude='*.root' -czf jup_code.tar.gz TPS-Onia2MuMu/
+tar --exclude='.git' --exclude='*.root' -czf jup_code.tar.gz JUPNtupleMaker/TPS_Onia2MuMu/
 
 # Copy to packages directory
-cp jup_code.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common/packages/
+cp jup_code.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common/packages/
 ```
 
 ---
@@ -79,7 +81,7 @@ cp jup_code.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_P
 After creating packages, verify their contents:
 
 ```bash
-cd /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common/packages
+cd /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common/packages
 
 # List package contents
 tar -tzf helac_package.tar.gz | head -20
@@ -104,8 +106,8 @@ Expected sizes (approx):
    happens on the worker node via `run_helac.sh`.
 
 2. **CMSSW Version Compatibility**: 
-   - JJP/JUP codes are designed for CMSSW_14_0_18
-   - GEN-SIM chain uses CMSSW_12_4_14_patch3
+   - JJP/JUP codes are designed for CMSSW_15_0_15
+   - GEN-SIM chain uses CMSSW_12_4_14
 
 3. **Updating Packages**: When you update the analysis code, remember to rebuild
    the corresponding tar.gz file and test on a worker node before large-scale submission.

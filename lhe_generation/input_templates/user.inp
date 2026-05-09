@@ -77,14 +77,14 @@ absoluterap F       # absolute rap (T) or not (F)
 # Monte Carlo settings
 unwgt T             # unweighting on/off
 lhewgtup F          # xwgtup=1 (F) or not (T) in unweighted lhe file
-preunw 12000000     # n. of pre-unweighted events
-unwevt 400000000    # n. of unweighted events
-nmc 400000000       # total number of phase space points
-nopt 40000000       # phase space points in first step
-nopt_step 40000000  # phase space points for each step after optimization
+preunw 10000        # 运行时通常取 nmc/10；此处保留与脚本联动规则一致的安全默认值
+unwevt 100000       # 正式大样本可再调大；小样本时由脚本传参覆盖
+nmc 100000          # 当 unwevt 较小时保持这一下限，避免 header-only LHE
+nopt 10000          # gener=0 时推荐 nopt=nmc/10
+nopt_step 10000     # gener=0 时推荐 nopt_step=nmc/10
 optf 1
 maxopt 8
-noptlim 400000000   # upper limit of phase space points
+noptlim 100000      # gener=0 时推荐 noptlim=nmc
 iopt 1
 alimit 0            # lower limit of alpha(i) in multichannel
 nlimit 1            # lower limit of number of channels

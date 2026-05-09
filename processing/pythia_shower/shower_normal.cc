@@ -1,8 +1,8 @@
 // ==============================================================================
 // shower_normal.cc - Standard Pythia8 shower processing
 // ==============================================================================
-// Performs parton shower + hadronization without phi meson enrichment.
-// Includes kinematic filtering for J/psi -> mu+ mu- decay products.
+// workbook_v2 中的 standard 模式要求“正常 shower”。
+// 因此这里不做 phi enrichment，也不做额外的 muon 选择或重复 hadronization。
 //
 // Compilation (in CMSSW environment):
 //   g++ -std=c++17 -O2 shower_normal.cc -o shower_normal \
@@ -22,7 +22,7 @@
 using namespace Pythia8;
 using namespace std;
 
-// Check if J/psi decay muons satisfy kinematic requirements
+// 以下函数保留作调试用途；standard 模式本身不依赖它们做筛选。
 bool hasValidJpsiMuons(Event& event, double minPt = 2.5, double maxEta = 2.4) {
     for (int i = 0; i < event.size(); ++i) {
         if (abs(event[i].id()) != 443) continue; // Only J/psi
@@ -126,44 +126,87 @@ int main(int argc, char* argv[]) {
     cout << "Input LHE:    " << inputFile << endl;
     cout << "Output HepMC: " << outputFile << endl;
     cout << "Events:       " << (nEvents > 0 ? to_string(nEvents) : "all") << endl;
-    cout << "Min muon pT:  " << minMuonPt << " GeV" << endl;
-    cout << "Max muon eta: " << maxMuonEta << endl;
-    cout << "Max retries:  " << maxRetry << endl;
+    cout << "Min muon pT:  " << minMuonPt << " GeV (legacy arg, standard 模式不做筛选)" << endl;
+    cout << "Max muon eta: " << maxMuonEta << " (legacy arg, standard 模式不做筛选)" << endl;
+    cout << "Max retries:  " << maxRetry << " (legacy arg, standard 模式不使用)" << endl;
     cout << "==========================================\n" << endl;
     
     // Initialize Pythia
     Pythia pythia;
+
+    auto setFlagIfExists = [&](const string& name, bool value) {
+        if (pythia.settings.isFlag(name)) {
+            pythia.readString(name + " = " + string(value ? "on" : "off"));
+        } else {
+            cerr << "[WARN] Pythia setting not found (flag): " << name << endl;
+        }
+    };
+    auto setModeIfExists = [&](const string& name, int value) {
+        if (pythia.settings.isMode(name)) {
+            pythia.readString(name + " = " + to_string(value));
+        } else {
+            cerr << "[WARN] Pythia setting not found (mode): " << name << endl;
+        }
+    };
+    auto setParmIfExists = [&](const string& name, double value) {
+        if (pythia.settings.isParm(name)) {
+            pythia.readString(name + " = " + to_string(value));
+        } else {
+            cerr << "[WARN] Pythia setting not found (parm): " << name << endl;
+        }
+    };
     
-    // Basic settings
+    // LHE 输入与通用 Run 3 CP5 配置
     pythia.readString("Beams:frameType = 4"); // Read from LHEF
     pythia.readString("Beams:LHEF = " + inputFile);
     pythia.readString("Beams:eCM = 13600."); // 13.6 TeV Run3
+    setModeIfExists("Tune:preferLHAPDF", 2);
+    pythia.readString("Main:timesAllowErrors = 10000");
+    setParmIfExists("Check:epTolErr", 0.01);
+    setParmIfExists("SLHA:minMassSM", 1000.);
+    pythia.readString("ParticleDecays:limitTau0 = on");
+    pythia.readString("ParticleDecays:tau0Max = 10");
+    setFlagIfExists("HadronLevel:QED", true);
+    setFlagIfExists("Beams:setProductionScalesFromLHEF", false);
     
+    // Onia settings (guarded by availability in the installed Pythia version)
+    setParmIfExists("Onia:massSplit", 0.2);
+    setFlagIfExists("Onia:forceMassSplit", true);
+    setFlagIfExists("OniaShower:all", true);
+    setModeIfExists("OniaShower:octetSplit", 1);
+
+
     // Shower settings
     pythia.readString("PartonLevel:ISR = on");
     pythia.readString("PartonLevel:FSR = on");
     pythia.readString("PartonLevel:MPI = on");
     
-    // Disable automatic hadronization for retry mechanism
-    pythia.readString("HadronLevel:all = off");
-    
-    // Color reconnection (CMS tune)
-    pythia.readString("ColourReconnection:reconnect = on");
-    pythia.readString("ColourReconnection:mode = 1");
-    pythia.readString("ColourReconnection:allowDoubleJunRem = off");
-    pythia.readString("ColourReconnection:m0 = 0.3");
-    pythia.readString("ColourReconnection:allowJunctions = on");
-    pythia.readString("ColourReconnection:junctionCorrection = 1.20");
-    pythia.readString("ColourReconnection:timeDilationMode = 2");
-    pythia.readString("ColourReconnection:timeDilationPar = 0.18");
-    
-    // CP5 tune
+    // Tune settings
     pythia.readString("Tune:pp = 14");
     pythia.readString("Tune:ee = 7");
-    pythia.readString("MultipartonInteractions:pT0Ref = 2.4024");
-    pythia.readString("MultipartonInteractions:ecmPow = 0.25208");
-    pythia.readString("MultipartonInteractions:expPow = 1.6");
-    
+    pythia.readString("MultipartonInteractions:ecmPow = 0.03344");
+    pythia.readString("MultipartonInteractions:bProfile = 2");
+    pythia.readString("MultipartonInteractions:pT0Ref = 1.41");
+    pythia.readString("MultipartonInteractions:coreRadius = 0.7634");
+    pythia.readString("MultipartonInteractions:coreFraction = 0.63");
+    pythia.readString("ColourReconnection:range = 5.176");
+    pythia.readString("SigmaTotal:zeroAXB = off");
+    pythia.readString("SpaceShower:alphaSorder = 2");
+    pythia.readString("SpaceShower:alphaSvalue = 0.118");
+    pythia.readString("SigmaProcess:alphaSvalue = 0.118");
+    pythia.readString("SigmaProcess:alphaSorder = 2");
+    pythia.readString("MultipartonInteractions:alphaSvalue = 0.118");
+    pythia.readString("MultipartonInteractions:alphaSorder = 2");
+    pythia.readString("TimeShower:alphaSorder = 2");
+    pythia.readString("TimeShower:alphaSvalue = 0.118");
+    pythia.readString("SigmaTotal:mode = 0");
+    pythia.readString("SigmaTotal:sigmaEl = 22.08");
+    pythia.readString("SigmaTotal:sigmaTot = 101.037");
+    pythia.readString("PDF:pSet = LHAPDF6:NNPDF31_nnlo_as_0118");
+
+    // Relax event checks for HELAC-Onia LHE color flow
+    // pythia.readString("Check:event = off");
+
     // Force J/psi -> mu+ mu-
     pythia.readString("443:onMode = off");
     pythia.readString("443:onIfMatch = 13 -13");
@@ -189,7 +232,6 @@ int main(int argc, char* argv[]) {
     int iEvent = 0;
     int iAbort = 0;
     int maxAbort = 10;
-    int totalRetries = 0;
     int successEvents = 0;
     int failedEvents = 0;
     
@@ -198,7 +240,7 @@ int main(int argc, char* argv[]) {
     while (true) {
         if (nEvents > 0 && iEvent >= nEvents) break;
         
-        // Run parton level (without hadronization)
+        // standard 模式直接执行完整 shower + hadronization。
         if (!pythia.next()) {
             if (pythia.info.atEndOfFile()) {
                 cout << "Reached end of LHE file." << endl;
@@ -209,40 +251,8 @@ int main(int argc, char* argv[]) {
             break;
         }
         
-        // Save parton level state
-        Event savedEvent = pythia.event;
-        PartonSystems savedPartonSystems = pythia.partonSystems;
-        
-        // Try hadronization with retries for muon kinematics
-        bool foundValid = false;
-        int nRetry = 0;
-        
-        for (nRetry = 0; nRetry < maxRetry; ++nRetry) {
-            pythia.event = savedEvent;
-            pythia.partonSystems = savedPartonSystems;
-            
-            if (!pythia.forceHadronLevel()) {
-                continue;
-            }
-            
-            // Check muon kinematics
-            bool validMuons = hasValidJpsiMuons(pythia.event, minMuonPt, maxMuonEta) ||
-                              hasValidUpsilonMuons(pythia.event, minMuonPt, maxMuonEta);
-            
-            if (validMuons) {
-                foundValid = true;
-                break;
-            }
-        }
-        
-        totalRetries += nRetry + 1;
-        
-        if (foundValid) {
-            successEvents++;
-            toHepMC.writeNextEvent(pythia);
-        } else {
-            failedEvents++;
-        }
+        successEvents++;
+        toHepMC.writeNextEvent(pythia);
         
         ++iEvent;
         if (iEvent % 100 == 0) {
@@ -261,7 +271,7 @@ int main(int argc, char* argv[]) {
     cout << "Events written:             " << successEvents 
          << " (" << 100.0*successEvents/max(1,iEvent) << "%)" << endl;
     cout << "Events skipped:             " << failedEvents << endl;
-    cout << "Average retries per event:  " << (double)totalRetries/max(1,iEvent) << endl;
+    cout << "Average retries per event:  1 (standard 模式不重试)" << endl;
     cout << "Output file: " << outputFile << endl;
     cout << "======================================================" << endl;
     

@@ -1,58 +1,42 @@
 # ==============================================================================
-# lhe_gen.sub - HTCondor submit file for LHE generation
+# lhe_gen.sub - LHE 生成节点 submit 模板
 # ==============================================================================
-# This template is used by dag_generator.py to submit HELAC-Onia jobs.
-# Variables are set by DAGMan via VARS declarations.
-#
-# Required variables:
-#   pool      - LHE pool name (e.g., pool_jpsi_g)
-#   seed      - Random seed for HELAC-Onia
-#   process   - HELAC-Onia process string
-#   min_pt_conia - Minimum charmonium pT
-#   min_pt_bonia - Minimum bottomonium pT
-#   min_pt_q     - Minimum quark/gluon pT
+# 由 dag_generator.py 通过 DAGMan VARS 注入以下变量：
+#   pool / seed / min_pt_* / unwevt / test_mode
+#   request_cpus / request_memory / request_disk
+#   lhe_bundle_path / lhe_bundle_name / proxy_bundle_path / proxy_bundle_name
 # ==============================================================================
 
 Universe = vanilla
 
-# Executable and arguments
-Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/lhe_generation/run_helac.sh
-Arguments = --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q)
+Executable = /bin/bash
+transfer_executable = False
+Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(lhe_bundle_name); cd runtime/lhe_generation; bash run_helac.sh --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q) --unwevt $(unwevt) --test-mode $(test_mode)'"
 
-# Input files to transfer
-Transfer_Input_Files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common/packages/helac_package.tar.gz, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/lhe_generation/input_templates/user.inp
-
-# Output handling
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
 
-# Log files
-Output = log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
-Error = log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
-Log = log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
+Transfer_Input_Files = $(lhe_bundle_path), $(proxy_bundle_path)
 
-# Resource requirements
-# HELAC-Onia is computationally intensive
-request_cpus = 8
-request_memory = 15GB
-request_disk = 10GB
+transfer_output_files =
 
-# Job flavor (CERN batch system)
-# "tomorrow" = up to 1 day
-+JobFlavour = "tomorrow"
+Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
+Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
+Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
 
-# Run in cmssw-el7 container (required for HELAC-Onia)
+request_cpus = $(request_cpus)
+request_memory = $(request_memory)
+request_disk = $(request_disk)
+
++MaxRuntime = 604800
+
+Environment = "HOME=/srv"
+
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64"
 
-# Retry failed jobs
-MaxRetries = 3
 OnExitHold = (ExitCode != 0)
-OnExitHoldReason = "Job exited with non-zero status"
+OnExitHoldReason = "LHE generation failed"
 OnExitHoldSubCode = 1
+PeriodicRelease = (JobRunCount < 2) && (HoldReasonCode == 3)
 
-# Periodic release of held jobs (up to 3 times)
-PeriodicRelease = (JobRunCount < 3) && (HoldReasonCode == 3)
-
-# Queue single job (seed is set via DAGMan VARS)
 Queue 1

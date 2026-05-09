@@ -1,24 +1,23 @@
 # ==============================================================================
-# summary.sub - HTCondor submit file for DAG summary job
-# ==============================================================================
-# This job runs at the end of the DAG to generate summary statistics.
+# summary.sub - DAG 汇总节点
 # ==============================================================================
 
 Universe = vanilla
 
-Executable = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/processing/templates/summary.sh
+Executable = /bin/bash
+transfer_executable = False
+Arguments = "-lc 'set -euo pipefail; tar -xzf $(summary_bundle_name); cd runtime/processing/templates; bash summary.sh'"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
+Transfer_Input_Files = $(summary_bundle_path)
 
-Output = log/summary_$(Cluster)_$(Process).stdout
-Error = log/summary_$(Cluster)_$(Process).stderr
-Log = log/summary_$(Cluster)_$(Process).log
+Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).stdout
+Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).stderr
+Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).log
 
 request_cpus = 1
 request_memory = 1GB
 request_disk = 1GB
-
-+JobFlavour = "espresso"
 
 Queue 1

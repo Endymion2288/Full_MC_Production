@@ -1,22 +1,24 @@
 // ==============================================================================
-// shower_phi.cc - Phi-enriched Pythia8 shower processing
+// shower_sps.cc - SPS (Single Parton Scattering) Pythia8 shower processing
 // ==============================================================================
-// Performs parton shower + hadronization with phi meson enrichment.
-// Uses Pythia8 save/restore mechanism to retry hadronization until
-// a phi meson is found in the event.
+// Specialized for JJP_SPS and JUP_SPS processes where:
+// - MPI (Multiple Parton Interactions) is turned OFF
+// - Phi meson enrichment through hadronization retry
+// - Supports both Color Singlet and Color Octet processes
 //
-// Key features:
-// - Enriched strange quark production to enhance phi yield
-// - Multiple hadronization retries to find events with phi mesons
-// - Kinematic filtering for both phi and J/psi decay products
+// Key differences from shower_phi.cc:
+// - MPI disabled (PartonLevel:MPI = off) for clean SPS topology
+// - Designed for 2-body production processes (2J/psi, J/psi+Upsilon)
+// - OniaShower enabled for color octet handling
+// - 只要求 hadronized 末态中出现 phi，不做额外 muon acceptance 过滤
 //
 // Compilation (in CMSSW environment):
-//   g++ -std=c++17 -O2 shower_phi.cc -o shower_phi \
+//   g++ -std=c++17 -O2 shower_sps.cc -o shower_sps \
 //       $(pythia8-config --cxxflags --libs) \
 //       -I$HEPMC3/include -L$HEPMC3/lib64 -lHepMC3
 //
 // Usage:
-//   ./shower_phi input.lhe output.hepmc [nEvents] [minPhiPt] [minMuonPt] [maxMuonEta] [maxRetry]
+//   ./shower_sps input.lhe output.hepmc [nEvents] [minPhiPt] [minMuonPt] [maxMuonEta] [maxRetry]
 // ==============================================================================
 
 #include "Pythia8/Pythia.h"
@@ -25,7 +27,6 @@
 #include <algorithm>
 #include <iostream>
 #include <string>
-#include <unordered_set>
 
 using namespace Pythia8;
 using namespace std;
@@ -48,43 +49,7 @@ bool hasPhiMeson(Event& event, double minPt = 0.0) {
     return false;
 }
 
-bool phiHasAncestorHardGluon(const Event& event, int idx, unordered_set<int>& visited) {
-    if (idx <= 0 || idx >= event.size()) return false;
-    if (!visited.insert(idx).second) return false;
-
-    const Particle& particle = event[idx];
-    int mother1 = particle.mother1();
-    int mother2 = particle.mother2();
-    if (mother1 <= 0 && mother2 <= 0) return false;
-
-    for (int motherIdx : {mother1, mother2}) {
-        if (motherIdx <= 0 || motherIdx >= event.size()) continue;
-        const Particle& mother = event[motherIdx];
-        if (mother.id() == 21 && mother.statusAbs() >= 21 && mother.statusAbs() < 30) {
-            return true;
-        }
-        if (phiHasAncestorHardGluon(event, motherIdx, visited)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool hasPhiFromHardGluon(Event& event, double minPt = 0.0) {
-    for (int i = 0; i < event.size(); ++i) {
-        if (abs(event[i].id()) != 333) continue;
-        int status = event[i].status();
-        if (!((status < 0) || event[i].isFinal())) continue;
-        if (event[i].pT() <= minPt) continue;
-        unordered_set<int> visited;
-        if (phiHasAncestorHardGluon(event, i, visited)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// 以下函数保留作调试用途；phi enrichment 本身只要求 phi 条件。
+// 以下函数保留作调试用途；SPS phi 模式本身只要求 phi 条件。
 bool hasValidJpsiMuons(Event& event, double minPt = 2.5, double maxEta = 2.4) {
     for (int i = 0; i < event.size(); ++i) {
         if (abs(event[i].id()) != 443) continue;
@@ -126,6 +91,7 @@ bool hasValidJpsiMuons(Event& event, double minPt = 2.5, double maxEta = 2.4) {
 bool hasValidUpsilonMuons(Event& event, double minPt = 2.5, double maxEta = 2.4) {
     for (int i = 0; i < event.size(); ++i) {
         int pid = abs(event[i].id());
+        // Upsilon(1S)=553, Upsilon(2S)=100553, Upsilon(3S)=200553
         if (pid != 553 && pid != 100553 && pid != 200553) continue;
         
         int status = event[i].status();
@@ -141,12 +107,12 @@ bool hasValidUpsilonMuons(Event& event, double minPt = 2.5, double maxEta = 2.4)
         
         for (int j = d1; j <= d2; ++j) {
             int pdgid = event[j].id();
-            if (pdgid == 13) {
+            if (pdgid == 13) { // mu-
                 foundMuMinus = true;
                 if (event[j].pT() > minPt && abs(event[j].eta()) < maxEta) {
                     muMinusValid = true;
                 }
-            } else if (pdgid == -13) {
+            } else if (pdgid == -13) { // mu+
                 foundMuPlus = true;
                 if (event[j].pT() > minPt && abs(event[j].eta()) < maxEta) {
                     muPlusValid = true;
@@ -184,8 +150,10 @@ void countParticles(Event& event, int& nJpsi, int& nUpsilon, int& nPhi, int& nMu
 int main(int argc, char* argv[]) {
     
     if (argc < 3) {
-        cerr << "\n====== Phi-Enriched Shower Processing ======" << endl;
-        cerr << "Usage: " << argv[0] << " input.lhe output.hepmc [nEvents] [minPhiPt] [minMuonPt] [maxMuonEta] [maxRetry] [requireLheGluon]" << endl;
+        cerr << "\n====== SPS Phi-Enriched Shower Processing ======" << endl;
+        cerr << "Specialized for Single Parton Scattering (SPS) processes" << endl;
+        cerr << "MPI is DISABLED for clean SPS event topology" << endl;
+        cerr << "\nUsage: " << argv[0] << " input.lhe output.hepmc [nEvents] [minPhiPt] [minMuonPt] [maxMuonEta] [maxRetry]" << endl;
         cerr << "\nArguments:" << endl;
         cerr << "  input.lhe   : Input LHE file from HELAC-Onia" << endl;
         cerr << "  output.hepmc: Output HepMC file" << endl;
@@ -194,9 +162,8 @@ int main(int argc, char* argv[]) {
         cerr << "  minMuonPt   : Minimum muon pT in GeV (default: 2.5)" << endl;
         cerr << "  maxMuonEta  : Maximum muon |eta| (default: 2.4)" << endl;
         cerr << "  maxRetry    : Maximum hadronization retries (default: 5000)" << endl;
-        cerr << "  requireLheGluon : 1/true 表示要求 phi 可追溯到 LHE 硬过程胶子" << endl;
         cerr << "\nExample:" << endl;
-        cerr << "  ./shower_phi jpsi_jpsi.lhe phi_enriched.hepmc 1000 3.0 2.5 2.4 1000" << endl;
+        cerr << "  ./shower_sps 2jpsi.lhe jjp_sps.hepmc 1000 3.0 2.5 2.4 1000" << endl;
         return 1;
     }
     
@@ -207,22 +174,17 @@ int main(int argc, char* argv[]) {
     double minMuonPt = (argc > 5) ? atof(argv[5]) : 2.5;
     double maxMuonEta = (argc > 6) ? atof(argv[6]) : 2.4;
     int maxRetry = (argc > 7) ? atoi(argv[7]) : 5000;
-    bool requireLheGluon = false;
-    if (argc > 8) {
-        string modeArg = argv[8];
-        requireLheGluon = (modeArg == "1" || modeArg == "true" || modeArg == "lhegluon");
-    }
     
-    cout << "\n====== Phi-Enriched Shower Processing ======" << endl;
+    cout << "\n====== SPS Phi-Enriched Shower Processing ======" << endl;
+    cout << "Mode:         SPS (MPI disabled)" << endl;
     cout << "Input LHE:    " << inputFile << endl;
     cout << "Output HepMC: " << outputFile << endl;
     cout << "Events:       " << (nEvents > 0 ? to_string(nEvents) : "all") << endl;
     cout << "Min phi pT:   " << minPhiPt << " GeV" << endl;
-    cout << "Min muon pT:  " << minMuonPt << " GeV (legacy arg, phi 模式不做筛选)" << endl;
-    cout << "Max muon eta: " << maxMuonEta << " (legacy arg, phi 模式不做筛选)" << endl;
+    cout << "Min muon pT:  " << minMuonPt << " GeV (legacy arg, SPS phi 模式不做筛选)" << endl;
+    cout << "Max muon eta: " << maxMuonEta << " (legacy arg, SPS phi 模式不做筛选)" << endl;
     cout << "Max retries:  " << maxRetry << endl;
-    cout << "Require LHE gluon ancestry: " << (requireLheGluon ? "yes" : "no") << endl;
-    cout << "=============================================\n" << endl;
+    cout << "================================================\n" << endl;
     
     // Initialize Pythia
     Pythia pythia;
@@ -263,22 +225,30 @@ int main(int argc, char* argv[]) {
     setFlagIfExists("Beams:setProductionScalesFromLHEF", false);
 
     // Onia settings (guarded by availability in the installed Pythia version)
+    // These are critical for color octet handling
     setParmIfExists("Onia:massSplit", 0.2);
     setFlagIfExists("Onia:forceMassSplit", true);
     setFlagIfExists("OniaShower:all", true);
     setModeIfExists("OniaShower:octetSplit", 1);
     
-    // Parton shower settings
-    pythia.readString("PartonLevel:ISR = on");
-    pythia.readString("PartonLevel:FSR = on");
-    pythia.readString("PartonLevel:MPI = on");
+    // ==========================================================================
+    // SPS-SPECIFIC SETTINGS: MPI is turned OFF
+    // ==========================================================================
+    // For SPS processes, we want clean parton shower without additional
+    // multiple parton interactions that would add underlying event activity
+    // not originating from the hard process.
+    // ==========================================================================
+    pythia.readString("PartonLevel:ISR = on");   // Initial State Radiation
+    pythia.readString("PartonLevel:FSR = on");   // Final State Radiation
+    pythia.readString("PartonLevel:MPI = off");  // Multiple Parton Interactions OFF
     
     // Disable automatic hadronization for retry mechanism
     pythia.readString("HadronLevel:all = off");
     
-    // Tune settings
+    // Tune settings (some MPI-related settings are kept for consistency but won't be used)
     pythia.readString("Tune:pp = 14");
     pythia.readString("Tune:ee = 7");
+    // MPI-related settings (kept for potential future use but inactive due to MPI=off)
     pythia.readString("MultipartonInteractions:ecmPow = 0.03344");
     pythia.readString("MultipartonInteractions:bProfile = 2");
     pythia.readString("MultipartonInteractions:pT0Ref = 1.41");
@@ -298,9 +268,6 @@ int main(int argc, char* argv[]) {
     pythia.readString("SigmaTotal:sigmaEl = 22.08");
     pythia.readString("SigmaTotal:sigmaTot = 101.037");
     pythia.readString("PDF:pSet = LHAPDF6:NNPDF31_nnlo_as_0118");
-
-    // Relax event checks for HELAC-Onia LHE color flow
-    // pythia.readString("Check:event = off");
 
     // Enhanced strange quark production for phi enrichment
     pythia.readString("StringFlav:probStoUD = 0.30");  // default 0.217
@@ -339,12 +306,12 @@ int main(int argc, char* argv[]) {
     // Particle counts
     int totalJpsi = 0, totalUpsilon = 0, totalPhi = 0, totalMuon = 0;
     
-    cout << "Starting event processing..." << endl;
+    cout << "Starting SPS event processing (MPI disabled)..." << endl;
     
     while (true) {
         if (nEvents > 0 && iEvent >= nEvents) break;
         
-        // Run parton level (without hadronization)
+        // Run parton level (without hadronization, no MPI)
         if (!pythia.next()) {
             if (pythia.info.atEndOfFile()) {
                 cout << "Reached end of LHE file." << endl;
@@ -355,7 +322,7 @@ int main(int argc, char* argv[]) {
             break;
         }
         
-        // Save parton level state
+        // Save parton level state after ISR/FSR shower (before hadronization)
         Event savedEvent = pythia.event;
         PartonSystems savedPartonSystems = pythia.partonSystems;
         
@@ -364,18 +331,18 @@ int main(int argc, char* argv[]) {
         int nRetry = 0;
         
         for (nRetry = 0; nRetry < maxRetry; ++nRetry) {
+            // Restore parton level state
             pythia.event = savedEvent;
             pythia.partonSystems = savedPartonSystems;
             
+            // Perform hadronization
             if (!pythia.forceHadronLevel()) {
                 continue;
             }
             
-            bool hasExpectedPhi = requireLheGluon
-                ? hasPhiFromHardGluon(pythia.event, minPhiPt)
-                : hasPhiMeson(pythia.event, minPhiPt);
+            bool hasPhi = hasPhiMeson(pythia.event, minPhiPt);
 
-            if (hasExpectedPhi) {
+            if (hasPhi) {
                 foundValid = true;
                 break;
             }
@@ -413,13 +380,12 @@ int main(int argc, char* argv[]) {
     pythia.stat();
     
     cout << "\n======================================================" << endl;
-    cout << "Phi-Enriched Processing Summary:" << endl;
+    cout << "SPS Phi-Enriched Processing Summary:" << endl;
     cout << "------------------------------------------------------" << endl;
+    cout << "Mode: SPS (MPI disabled)" << endl;
     cout << "Selection criteria:" << endl;
     cout << "  Phi pT > " << minPhiPt << " GeV" << endl;
-    cout << "  Phi selection mode: "
-         << (requireLheGluon ? "MPI on + require hard-process gluon ancestry" : "MPI on + any phi accepted")
-         << endl;
+    cout << "  Accept event once a phi meson is present after hadronization" << endl;
     cout << "------------------------------------------------------" << endl;
     cout << "Total LHE events processed:   " << iEvent << endl;
     cout << "Events written (all cuts):    " << successWithPhi 
