@@ -62,7 +62,7 @@ DPS2: Inputs: pool_2jpsi, pool_gg | Modes: [Normal, Phi]
 
 TPS: Inputs: pool_jpsi_CSCO_g, pool_jpsi_CSCO_g, pool_gg | Modes: [Normal, Normal, Phi]
 
-Analysis: 使用 jjp_code.tar.gz + TPS_Onia2MuMu/test/ConfFile_cfg.py
+Analysis: 使用本仓库 `external/TPS-Onia2MuMu` submodule 自动打包生成的 `tpsonia2mumu_code.tar.gz`，通过 `HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py` 配置 `analysisMode=JpsiJpsiPhi`
 
 JUP Campaigns:
 
@@ -75,6 +75,8 @@ DPS2: Inputs: pool_jpsi_CSCO_g, pool_upsilon_CSCO_g | Modes: [Normal, Phi]
 DPS3: Inputs: pool_jpsi_upsilon_CSCO, pool_gg | Modes: [Normal, Phi]
 
 TPS: Inputs: pool_jpsi_CSCO_g, pool_upsilon_CSCO_g, pool_gg | Modes: [Normal, Normal, Phi]
+
+Analysis: 使用本仓库 `external/TPS-Onia2MuMu` submodule 自动打包生成的 `tpsonia2mumu_code.tar.gz`，通过 `HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py` 配置 `analysisMode=JpsiUpsPhi`
 
 ### Pythia8
 输入LHE，输出hepmc2文件
@@ -162,4 +164,3 @@ Onia:massSplit = 0.2
 
 #### 环境配置
 目前HTCondor中大部分节点的环境都不能与Helac-Onia或意向版本的CMSSW匹配，所以在运行脚本中需要特别注意环境设置，特别是一些程序是否在节点上的cvmfs上有需要确认。可以使用需要的Sigularity环境。只是注意在切换CMSSW版本时若之前打开了Sigularity环境，需要先exit再打开新的。
-

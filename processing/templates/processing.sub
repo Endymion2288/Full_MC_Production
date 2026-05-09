@@ -6,6 +6,7 @@
 #   max_events / enable_ntuple / cleanup
 #   request_cpus / request_memory / request_disk
 #   processing_bundle_path / processing_bundle_name / proxy_bundle_path / proxy_bundle_name
+#   log_root
 # ==============================================================================
 
 Universe = vanilla
@@ -21,9 +22,9 @@ Transfer_Input_Files = $(processing_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
-Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
+Output = $(log_root)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error  = $(log_root)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log    = $(log_root)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
 
 request_cpus = $(request_cpus)
 request_memory = $(request_memory)
@@ -33,7 +34,7 @@ request_disk = $(request_disk)
 
 Environment = "HOME=/srv"
 
-+SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
++SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
 
 OnExitHold = (ExitCode != 0)
 OnExitHoldReason = "Processing chain failed"

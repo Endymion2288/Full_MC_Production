@@ -94,6 +94,7 @@ setup_cmssw15() {
     
     setup_cms_base
     
+    export SCRAM_ARCH=el9_amd64_gcc12
     cd "${CMSSW_15_BASE}/src"
     eval $(scramv1 runtime -sh)
     cd - > /dev/null
@@ -211,6 +212,7 @@ get_lhe_file() {
 if [ "$1" = "--cmssw12" ]; then
     setup_cmssw12
 elif [ "$1" = "--cmssw14" ]; then
+    msg_warn "--cmssw14 is deprecated; using CMSSW_15_0_15 for ntuple debugging"
     setup_cmssw15
 elif [ "$1" = "--cmssw15" ]; then
     setup_cmssw15

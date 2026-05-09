@@ -32,6 +32,7 @@ cleanup_on_exit() {
         rm -f "${WORKDIR}"/ntuple_*.root 2>/dev/null || true
         rm -f "${WORKDIR}"/.bash_history 2>/dev/null || true
         rm -f "${WORKDIR}"/.viminfo 2>/dev/null || true
+        rm -rf "${WORKDIR}"/CMSSW_14_0_18 2>/dev/null || true
         rm -rf "${WORKDIR}"/CMSSW_15_0_15 2>/dev/null || true
         echo "[INFO] Cleanup done"
     fi
@@ -240,7 +241,7 @@ make_remote_dir() {
 stage_out() {
     local local_file="$1"
     local remote_subpath="$2"
-    
+
     if [[ ! -f "${local_file}" ]]; then
         msg_error "Local file not found: ${local_file}"
         return 1
@@ -338,7 +339,6 @@ ensure_cmssw12_project() {
     # Use stderr for info messages to avoid polluting function return value
     msg_info "Creating CMSSW_12_4_14 project from CVMFS..." >&2
     source /cvmfs/cms.cern.ch/cmsset_default.sh
-    export SCRAM_ARCH=el8_amd64_gcc10
     
     cd "${WORKDIR}"
     run_logged "scram_project_CMSSW_12_4_14" scramv1 project CMSSW CMSSW_12_4_14 >&2 || {
@@ -353,8 +353,6 @@ ensure_cmssw12_project() {
 setup_cmssw12() {
     msg_info "Setting up CMSSW_12_4_14..."
     source /cvmfs/cms.cern.ch/cmsset_default.sh
-    # Force el8 architecture for CMSSW_12
-    export SCRAM_ARCH=el8_amd64_gcc10
     
     # Create project on demand if needed
     local base_path
@@ -390,12 +388,7 @@ scramv1 project CMSSW CMSSW_15_0_15
 CREATEEOF
     chmod +x "${tmp_script}"
     
-    run_logged "apptainer_create_CMSSW_15_0_15" apptainer exec \
-        --bind /cvmfs:/cvmfs \
-        --bind /tmp:/tmp \
-        --bind "${WORKDIR}:${WORKDIR}" \
-        "${EL9_CONTAINER}" \
-        /bin/bash "${tmp_script}" >&2
+    run_el9_script_logged "create_CMSSW_15_0_15" "${tmp_script}" >&2
     
     local rc=$?
     rm -f "${tmp_script}"
@@ -429,6 +422,29 @@ setup_cmssw15() {
 # EL9 container path for CMSSW_15
 EL9_CONTAINER="/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
 
+running_on_el9() {
+    [[ -f /etc/os-release ]] && grep -Eq '^(VERSION_ID="?9|PLATFORM_ID="platform:el9)' /etc/os-release
+}
+
+run_el9_script_logged() {
+    local label="$1"
+    local script_path="$2"
+
+    if running_on_el9; then
+        run_logged "${label}" /bin/bash "${script_path}"
+        return $?
+    fi
+
+    run_logged "${label}" apptainer exec \
+        --bind /cvmfs:/cvmfs \
+        --bind /tmp:/tmp \
+        --bind "${WORKDIR}:${WORKDIR}" \
+        --env "X509_USER_PROXY=${X509_USER_PROXY:-}" \
+        --env "HOME=${HOME}" \
+        "${EL9_CONTAINER}" \
+        /bin/bash "${script_path}"
+}
+
 # Run command inside el9 container using apptainer
 run_in_el9_container() {
     local script_content="$1"
@@ -444,13 +460,16 @@ SCRIPT_HEADER
     echo "${script_content}" >> "${tmp_script}"
     chmod +x "${tmp_script}"
     
-    # Run in el9 container with necessary bind mounts
-    apptainer exec \
-        --bind /cvmfs:/cvmfs \
-        --bind /tmp:/tmp \
-        --bind "${WORKDIR}:${WORKDIR}" \
-        "${EL9_CONTAINER}" \
+    if running_on_el9; then
         /bin/bash "${tmp_script}"
+    else
+        apptainer exec \
+            --bind /cvmfs:/cvmfs \
+            --bind /tmp:/tmp \
+            --bind "${WORKDIR}:${WORKDIR}" \
+            "${EL9_CONTAINER}" \
+            /bin/bash "${tmp_script}"
+    fi
     
     local rc=$?
     rm -f "${tmp_script}"
@@ -477,14 +496,7 @@ SCRIPT_EOF
     
     chmod +x "${tmp_script}"
     
-    run_logged "apptainer_cmsRun_$(basename "${cfg}")" apptainer exec \
-        --bind /cvmfs:/cvmfs \
-        --bind /tmp:/tmp \
-        --bind "${WORKDIR}:${WORKDIR}" \
-        --env "X509_USER_PROXY=${X509_USER_PROXY:-}" \
-        --env "HOME=${HOME}" \
-        "${EL9_CONTAINER}" \
-        /bin/bash "${tmp_script}"
+    run_el9_script_logged "cmsRun_$(basename "${cfg}")" "${tmp_script}"
     
     local rc=$?
     rm -f "${tmp_script}"
@@ -517,13 +529,7 @@ ensure_voms_proxy() {
 
 prepare_cmssw15_from_package() {
     local analysis="$1"
-    local pkg=""
-
-    case "${analysis}" in
-        "JJP") pkg="${PACKAGES_DIR}/jjp_code.tar.gz" ;;
-        "JUP") pkg="${PACKAGES_DIR}/jup_code.tar.gz" ;;
-        *) msg_error "Unknown analysis type for CMSSW_15 build: ${analysis}"; return 1 ;;
-    esac
+    local pkg="${PACKAGES_DIR}/tpsonia2mumu_code.tar.gz"
 
     if [[ ! -d "${PACKAGES_DIR}" ]]; then
         msg_error "Packages directory missing: ${PACKAGES_DIR}"
@@ -539,7 +545,7 @@ prepare_cmssw15_from_package() {
     
     if [[ ! -d "${project_dir}/src" ]]; then
         msg_info "Creating CMSSW_15_0_15 project in el9 container at ${project_dir}..."
-        
+
         local tmp_script=$(mktemp --suffix=_create_cmssw15.sh)
         cat > "${tmp_script}" << CREATEEOF
 #!/bin/bash
@@ -551,21 +557,11 @@ scramv1 project CMSSW CMSSW_15_0_15
 CREATEEOF
         chmod +x "${tmp_script}"
         
-        run_logged "apptainer_create_CMSSW_15_0_15_pkg" apptainer exec \
-            --bind /cvmfs:/cvmfs \
-            --bind /tmp:/tmp \
-            --bind "${WORKDIR}:${WORKDIR}" \
-            "${EL9_CONTAINER}" \
-            /bin/bash "${tmp_script}"
+        run_el9_script_logged "create_CMSSW_15_0_15_pkg" "${tmp_script}"
         rm -f "${tmp_script}"
     fi
 
-    # The worker package is expected under <channel>/TPS_Onia2MuMu/.
-    local pkg_check_dir=""
-    case "${analysis}" in
-        "JJP") pkg_check_dir="${project_dir}/src/JJPNtupleMaker/TPS_Onia2MuMu" ;;
-        "JUP") pkg_check_dir="${project_dir}/src/JUPNtupleMaker/TPS_Onia2MuMu" ;;
-    esac
+    local pkg_check_dir="${project_dir}/src/HeavyFlavorAnalysis/TPS-Onia2MuMu"
     
     if [[ ! -d "${pkg_check_dir}" ]]; then
         msg_info "Unpacking ${pkg} into CMSSW src..."
@@ -584,16 +580,11 @@ source /cvmfs/cms.cern.ch/cmsset_default.sh
 export SCRAM_ARCH=el9_amd64_gcc12
 cd "${project_dir}/src"
 eval \$(scramv1 runtime -sh)
-scram b -j 4
+scram b -j 4 HeavyFlavorAnalysis/TPS-Onia2MuMu
 BUILDEOF
         chmod +x "${tmp_script}"
         
-        run_logged "apptainer_scram_b_${ANALYSIS_TYPE}" apptainer exec \
-            --bind /cvmfs:/cvmfs \
-            --bind /tmp:/tmp \
-            --bind "${WORKDIR}:${WORKDIR}" \
-            "${EL9_CONTAINER}" \
-            /bin/bash "${tmp_script}"
+        run_el9_script_logged "scram_b_${ANALYSIS_TYPE}" "${tmp_script}"
         rm -f "${tmp_script}"
         
         touch "${stamp}"
@@ -602,25 +593,54 @@ BUILDEOF
     fi
 }
 
-ntuple_package_dir() {
-    case "$1" in
-        "JJP") echo "${CMSSW_15_BASE}/src/JJPNtupleMaker/TPS_Onia2MuMu" ;;
-        "JUP") echo "${CMSSW_15_BASE}/src/JUPNtupleMaker/TPS_Onia2MuMu" ;;
-        *) return 1 ;;
-    esac
+prepare_cmssw15_from_runtime() {
+    local pkg="${PACKAGES_DIR}/cmssw15_tpsonia2mumu_runtime.tar.gz"
+    local project_dir="${WORKDIR}/CMSSW_15_0_15"
+
+    if [[ ! -f "${pkg}" ]]; then
+        return 1
+    fi
+
+    export CMSSW_15_BASE="${project_dir}"
+
+    if [[ ! -d "${project_dir}/src" ]]; then
+        msg_info "Unpacking prebuilt CMSSW_15_0_15 runtime from ${pkg}..."
+        tar -xzf "${pkg}" -C "${WORKDIR}"
+    fi
+
+    if [[ ! -d "${project_dir}/src" ]]; then
+        msg_error "Prebuilt CMSSW15 runtime did not create ${project_dir}/src"
+        return 1
+    fi
+
+    if [[ ! -f "${project_dir}/.project_renamed" ]]; then
+        local tmp_script=$(mktemp --suffix=_rename_cmssw15.sh)
+        cat > "${tmp_script}" << RENAMEEOF
+#!/bin/bash
+set -e
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+export SCRAM_ARCH=el9_amd64_gcc12
+cd "${project_dir}/src"
+scram build ProjectRename
+RENAMEEOF
+        chmod +x "${tmp_script}"
+        run_el9_script_logged "scram_ProjectRename_CMSSW_15_0_15" "${tmp_script}" || {
+            rm -f "${tmp_script}"
+            return 1
+        }
+        rm -f "${tmp_script}"
+        touch "${project_dir}/.project_renamed"
+    fi
+
+    msg_info "Using prebuilt CMSSW_15_0_15 runtime"
 }
 
-ntuple_analysis_mode() {
-    case "$1" in
-        "JJP") echo "JpsiJpsiPhi" ;;
-        "JUP") echo "JpsiUpsPhi" ;;
-        *) return 1 ;;
-    esac
-}
+prepare_cmssw15_for_ntuple() {
+    if prepare_cmssw15_from_runtime; then
+        return 0
+    fi
 
-ntuple_cfg_path() {
-    local package_dir="$1"
-    echo "${package_dir}/test/ConfFile_cfg.py"
+    prepare_cmssw15_from_package "$@"
 }
 
 # ==============================================================================
@@ -634,8 +654,24 @@ ensure_worker_shower_tools() {
         return 0
     fi
 
+    local required_tools=(shower_normal shower_phi shower_sps event_mixer_multisource)
+    local tool=""
+    local can_reuse="true"
+    for tool in "${required_tools[@]}"; do
+        if [[ ! -x "${tool}" ]] || ! ldd "./${tool}" >/dev/null 2>&1; then
+            can_reuse="false"
+            break
+        fi
+    done
+
+    if [[ "${can_reuse}" == "true" ]]; then
+        msg_info "Reusing transferred shower/mixer binaries after ldd validation"
+        SHOWER_BUILD_DONE="true"
+        return 0
+    fi
+
     msg_info "Rebuilding shower/mixer tools inside worker for ABI compatibility..."
-    run_logged "build_pythia_shower_tools" make -B all
+    run_logged "build_pythia_shower_tools" make -B all || return 1
     SHOWER_BUILD_DONE="true"
 }
 
@@ -905,41 +941,45 @@ run_ntuple() {
     NTUPLE_OUTPUT="${WORKDIR}/output_ntuple.root"
     MINIAOD_OUTPUT="${MINIAOD_OUTPUT:-${WORKDIR}/output_MINIAOD.root}"
     local analysis_mode=""
-    local package_dir=""
-    local cfg_path=""
+    case "${ANALYSIS_TYPE}" in
+        "JJP") analysis_mode="JpsiJpsiPhi" ;;
+        "JUP") analysis_mode="JpsiUpsPhi" ;;
+        *)
+            msg_error "Unknown analysis type: ${ANALYSIS_TYPE}"
+            return 1
+            ;;
+    esac
+
+    if [[ -n "${MINIAOD_INPUT}" ]]; then
+        local downloaded_miniaod="${WORKDIR}/output_MINIAOD.root"
+        if [[ "${MINIAOD_INPUT}" == root://* ]]; then
+            msg_info "Downloading MiniAOD input for standalone ntuple node..."
+            run_logged "xrdcp_miniaod_input" run_xrdcp -f "${MINIAOD_INPUT}" "${downloaded_miniaod}" || return 1
+            MINIAOD_OUTPUT="${downloaded_miniaod}"
+        elif [[ "${MINIAOD_INPUT}" == file:* ]]; then
+            MINIAOD_OUTPUT="${MINIAOD_INPUT#file:}"
+        else
+            MINIAOD_OUTPUT="${MINIAOD_INPUT}"
+        fi
+    fi
 
     if [[ ! -f "${MINIAOD_OUTPUT}" ]]; then
         msg_error "Ntuple input missing: ${MINIAOD_OUTPUT}"
         return 1
     fi
 
-    prepare_cmssw15_from_package "${ANALYSIS_TYPE}" || return 1
+    prepare_cmssw15_for_ntuple "${ANALYSIS_TYPE}" || return 1
     setup_cmssw15
 
-    analysis_mode=$(ntuple_analysis_mode "${ANALYSIS_TYPE}") || {
-        msg_error "Unknown analysis type: ${ANALYSIS_TYPE}"
-        return 1
-    }
-    package_dir=$(ntuple_package_dir "${ANALYSIS_TYPE}") || {
-        msg_error "Unknown analysis type: ${ANALYSIS_TYPE}"
-        return 1
-    }
-    cfg_path=$(ntuple_cfg_path "${package_dir}")
-
-    if [[ ! -f "${cfg_path}" ]]; then
-        msg_error "Ntuple config missing: ${cfg_path}"
-        msg_error "Rebuild the ${ANALYSIS_TYPE} worker package with TPS_Onia2MuMu/test/ConfFile_cfg.py included."
-        return 1
-    fi
-
-    msg_info "Running ${ANALYSIS_TYPE} Ntuple analysis via ${cfg_path}..."
-    run_cmsrun_cmssw15 "${cfg_path}" \
+    msg_info "Running ${ANALYSIS_TYPE} Ntuple analysis via ConfFile_cfg.py (${analysis_mode})..."
+    run_cmsrun_cmssw15 "HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py" \
         inputFiles="file:${MINIAOD_OUTPUT}" \
         outputFile="${NTUPLE_OUTPUT}" \
+        analysisMode="${analysis_mode}" \
         runOnMC=True \
         era=Run2022 \
-        analysisMode="${analysis_mode}" \
-        maxEvents=-1
+        maxEvents=-1 \
+        requireAcceptedCandidatesForMonteCarloTree=False
     
     if [[ ! -f "${NTUPLE_OUTPUT}" ]]; then
         msg_error "Ntuple step failed: ${NTUPLE_OUTPUT} not created"
@@ -959,7 +999,7 @@ transfer_output() {
     make_remote_dir "${output_subpath}" || return 1
     
     # Copy final outputs via XRootD
-    if [[ -f "${MINIAOD_OUTPUT}" ]]; then
+    if [[ "${TRANSFER_MINIAOD}" == "true" && -f "${MINIAOD_OUTPUT}" ]]; then
         local miniaod_basename=$(basename "${MINIAOD_OUTPUT}")
         stage_out "${MINIAOD_OUTPUT}" "${output_subpath}/${miniaod_basename}" || return 1
     fi
@@ -1004,6 +1044,8 @@ Optional:
   --cleanup BOOL          是否清理中间文件 (true|false)
   --skip-to STEP          Skip to specified step (shower|mix|gensim|raw|reco|miniaod|ntuple)
   --stop-at STEP          Stop after specified step
+  --miniaod-input PATH    Existing MiniAOD input for standalone ntuple nodes
+  --transfer-miniaod BOOL Whether transfer step should upload MiniAOD (true|false)
   --max-events N          Limit events for fast local test (default: -1 = all)
   -h, --help              Show this help
 
@@ -1032,6 +1074,8 @@ ENABLE_NTUPLE="true"
 SKIP_TO=""
 STOP_AT=""
 MAX_EVENTS=-1
+MINIAOD_INPUT=""
+TRANSFER_MINIAOD="true"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -1083,6 +1127,14 @@ while [[ $# -gt 0 ]]; do
             MAX_EVENTS="$2"
             shift 2
             ;;
+        --miniaod-input)
+            MINIAOD_INPUT="$2"
+            shift 2
+            ;;
+        --transfer-miniaod)
+            TRANSFER_MINIAOD="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -1109,6 +1161,11 @@ if [[ "${CLEANUP}" != "true" ]] && [[ "${CLEANUP}" != "false" ]]; then
     exit 1
 fi
 
+if [[ "${TRANSFER_MINIAOD}" != "true" ]] && [[ "${TRANSFER_MINIAOD}" != "false" ]]; then
+    msg_error "--transfer-miniaod must be true or false"
+    exit 1
+fi
+
 if ! [[ "${MAX_EVENTS}" =~ ^-?[0-9]+$ ]]; then
     msg_error "--max-events must be an integer"
     exit 1
@@ -1127,56 +1184,60 @@ IFS=',' read -ra SHOWER_MODES <<< "$MODES"
 # Validate VOMS proxy early (needed for EOS/XRootD listing)
 ensure_voms_proxy
 
-# Resolve LHE files from input specs
-# Supports: file:/path/to.lhe, GEN:pool:idx, EOS:pool:idx:usage, pool:idx
 LHE_FILES=()
-declare -a parts  # Declare array outside loop (no 'local' in main script)
-for spec in "${INPUT_SPECS[@]}"; do
-    if [[ "$spec" == file:* ]]; then
-        # Local file path (from test_full_chain or local runs)
-        lhe_file="${spec#file:}"
-    elif [[ "$spec" == GEN:* ]]; then
-        # Format: GEN:pool_name:lhe_job_idx[:seed]
-        IFS=':' read -ra parts <<< "$spec"
-        pool_name="${parts[1]}"
-        lhe_job_idx="${parts[2]}"
-        if [[ ${#parts[@]} -ge 4 ]]; then
-            seed="${parts[3]}"
+if [[ "${SKIP_TO}" == "ntuple" ]]; then
+    msg_info "Skipping LHE input resolution for standalone ntuple node"
+else
+    # Resolve LHE files from input specs.
+    # Supports: file:/path/to.lhe, GEN:pool:idx, EOS:pool:idx:usage, pool:idx.
+    declare -a parts  # Declare array outside loop (no 'local' in main script)
+    for spec in "${INPUT_SPECS[@]}"; do
+        if [[ "$spec" == file:* ]]; then
+            # Local file path (from test_full_chain or local runs)
+            lhe_file="${spec#file:}"
+        elif [[ "$spec" == GEN:* ]]; then
+            # Format: GEN:pool_name:lhe_job_idx[:seed]
+            IFS=':' read -ra parts <<< "$spec"
+            pool_name="${parts[1]}"
+            lhe_job_idx="${parts[2]}"
+            if [[ ${#parts[@]} -ge 4 ]]; then
+                seed="${parts[3]}"
+            else
+                seed=$((100 + lhe_job_idx))
+            fi
+            lhe_file="${EOS_LHE_POOL}/${pool_name}/sample_${pool_name}_${seed}.lhe"
+            if ! check_remote_file "$lhe_file"; then
+                if ! lhe_file=$(get_lhe_file "$pool_name" "$lhe_job_idx"); then
+                    msg_error "Could not resolve LHE file for: $spec (pool: ${pool_name}, idx: ${lhe_job_idx})"
+                    exit 1
+                fi
+            fi
+        elif [[ "$spec" == EOS:* ]]; then
+            # Format: EOS:pool_name:job_id:usage_idx - existing LHE from EOS
+            IFS=':' read -ra parts <<< "$spec"
+            pool_name="${parts[1]}"
+            job_id="${parts[2]}"
+            if ! lhe_file=$(get_lhe_file "$pool_name" "$job_id"); then
+                msg_error "Could not resolve LHE file for: $spec (pool: ${pool_name}, job: ${job_id})"
+                exit 1
+            fi
         else
-            seed=$((100 + lhe_job_idx))
-        fi
-        lhe_file="${EOS_LHE_POOL}/${pool_name}/sample_${pool_name}_${seed}.lhe"
-        if ! check_remote_file "$lhe_file"; then
-            if ! lhe_file=$(get_lhe_file "$pool_name" "$lhe_job_idx"); then
-                msg_error "Could not resolve LHE file for: $spec (pool: ${pool_name}, idx: ${lhe_job_idx})"
+            # Legacy format: pool_name:index
+            pool_name="${spec%:*}"
+            index="${spec#*:}"
+            if ! lhe_file=$(get_lhe_file "$pool_name" "$index"); then
+                msg_error "Could not resolve LHE file for: $spec (pool: ${pool_name}, idx: ${index})"
                 exit 1
             fi
         fi
-    elif [[ "$spec" == EOS:* ]]; then
-        # Format: EOS:pool_name:job_id:usage_idx - existing LHE from EOS
-        IFS=':' read -ra parts <<< "$spec"
-        pool_name="${parts[1]}"
-        job_id="${parts[2]}"
-        if ! lhe_file=$(get_lhe_file "$pool_name" "$job_id"); then
-            msg_error "Could not resolve LHE file for: $spec (pool: ${pool_name}, job: ${job_id})"
+
+        if [[ -z "$lhe_file" ]] || ! check_remote_file "$lhe_file"; then
+            msg_error "Could not resolve LHE file for: $spec (tried: ${lhe_file:-<none>})"
             exit 1
         fi
-    else
-        # Legacy format: pool_name:index
-        pool_name="${spec%:*}"
-        index="${spec#*:}"
-        if ! lhe_file=$(get_lhe_file "$pool_name" "$index"); then
-            msg_error "Could not resolve LHE file for: $spec (pool: ${pool_name}, idx: ${index})"
-            exit 1
-        fi
-    fi
-    
-    if [[ -z "$lhe_file" ]] || ! check_remote_file "$lhe_file"; then
-        msg_error "Could not resolve LHE file for: $spec (tried: ${lhe_file:-<none>})"
-        exit 1
-    fi
-    LHE_FILES+=("$lhe_file")
-done
+        LHE_FILES+=("$lhe_file")
+    done
+fi
 
 # Print configuration
 echo ""

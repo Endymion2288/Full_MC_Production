@@ -3,6 +3,7 @@ output/
 processing/pythia_shower/event_mixer_multisource
 processing/pythia_shower/shower_normal
 processing/pythia_shower/shower_phi
+processing/pythia_shower/shower_sps
 *.tar.gz
 *.tar.gz.bak
 *.root
@@ -15,6 +16,8 @@ processing/pythia_shower/shower_phi
 *.dag*
 dagman.config
 __pycache__/
+*/__pycache__/
+test/
 *.pyc
 tmp/
 xcheng.cc
@@ -25,4 +28,4 @@ output*/
 log_full/
 checks/
 .codex/
-AGENTS.md
+Helac2Ntuple.pdf

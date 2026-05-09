@@ -1,6 +1,9 @@
 # ==============================================================================
 # ntuple_jjp_cfg.py - Ntuple configuration for JJP (J/psi + J/psi + phi) analysis
 # ==============================================================================
+# Deprecated reference config: the active T2_CN_Beijing workflow now runs
+# HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py with
+# analysisMode=JpsiJpsiPhi from the shared CMSSW_15 package.
 # Based on TPS-Onia2MuMu-Dev-J-J-P branch
 # Reads MiniAOD and produces flat ntuple for physics analysis
 #
