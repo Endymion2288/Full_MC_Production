@@ -5,7 +5,9 @@ This directory should contain the tarballs transferred to worker nodes.
 
 ## 1. `helac_package.tar.gz` (required)
 
-`run_helac.sh` expects the HELAC-Onia source tarballs and builds them inside the worker sandbox.
+`run_helac.sh` accepts either source tarballs or a prebuilt HELAC-Onia runtime.
+When a compiled `HELAC-Onia-2.7.6/ho_cluster` is present, the worker reuses it
+and normalizes known generated absolute symlinks before running.
 
 Contents:
 - `HELAC-Onia-2.7.6.tar.gz`
@@ -40,7 +42,18 @@ Initialize or refresh it with:
 git submodule update --init --recursive
 ```
 
-`dag_generator.py prepare-runtime`, `generate`, and `generate-test` build `tpsonia2mumu_code.tar.gz` from the submodule automatically and insert it into the processing runtime bundle. No manual copy into `common/packages/` is needed.
+When no prebuilt CMSSW15 runtime is available, `dag_generator.py generate
+--enable-ntuple`, `generate-test --enable-ntuple`, and `prepare-runtime
+--include-ntuple` build `tpsonia2mumu_code.tar.gz` from the submodule
+automatically and insert it into the ntuple runtime bundle. No manual copy into
+`common/packages/` is needed.
+
+## 3. `cmssw15_tpsonia2mumu_runtime.tar.gz` (optional, preferred)
+
+For ntuple production, place a prebuilt CMSSW 15 project tarball here or pass it
+with `--cmssw15-runtime-tarball`. It should contain `CMSSW_15_0_15/` at archive
+root. Worker jobs unpack it, run `scram build ProjectRename`, and skip the
+per-job `scram b HeavyFlavorAnalysis/TPS-Onia2MuMu` rebuild.
 
 ## Verification
 
@@ -53,11 +66,12 @@ ls -lh *.tar.gz
 Checks:
 - runtime generation should produce `tpsonia2mumu_code.tar.gz` under the selected DAG output directory
 - the archive must contain `HeavyFlavorAnalysis/TPS-Onia2MuMu/`
-- worker build target is `scram b -j 4 HeavyFlavorAnalysis/TPS-Onia2MuMu`
+- source-package fallback worker build target is `scram b -j 4 HeavyFlavorAnalysis/TPS-Onia2MuMu`
+- prebuilt CMSSW15 worker relocation target is `scram build ProjectRename`
 - ntuple tests on this branch should be run in `CMSSW_15_0_15`
 
 ## Notes
 
 1. `helac_package.tar.gz` remains the only hard dependency for LHE-only and MiniAOD-only smoke tests.
-2. The submodule becomes required as soon as `--enable-ntuple` is used.
+2. The submodule becomes required for `--enable-ntuple` only when no prebuilt CMSSW15 runtime is provided.
 3. Keep the package small by excluding `.git`, CRAB work areas, ROOT outputs, and local caches.

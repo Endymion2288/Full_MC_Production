@@ -130,6 +130,32 @@ ensure_helac() {
     cd "${WORKDIR}"
 }
 
+normalize_prebuilt_helac_links() {
+    local helac_dir="${WORKDIR}/HELAC-Onia-2.7.6"
+
+    [[ -d "${helac_dir}" ]] || return 0
+    cd "${helac_dir}"
+
+    if [[ -L ho_cluster ]] && [[ "$(readlink ho_cluster)" = /* ]]; then
+        ln -sfn cluster/bin/ho_cluster ho_cluster
+    fi
+    if [[ -L bin/ho_cluster ]] && [[ "$(readlink bin/ho_cluster)" = /* ]]; then
+        ln -sfn ../cluster/bin/ho_cluster bin/ho_cluster
+    fi
+    if [[ -L Helac-Onia ]] && [[ "$(readlink Helac-Onia)" = /* ]]; then
+        ln -sfn bin/Helac-Onia Helac-Onia
+    fi
+    if [[ -L addon/pp_NOnia_MPS/bin/HO_pp_NOnia_MPS ]] && [[ "$(readlink addon/pp_NOnia_MPS/bin/HO_pp_NOnia_MPS)" = /* ]]; then
+        ln -sfn ../../../bin/HO_pp_NOnia_MPS addon/pp_NOnia_MPS/bin/HO_pp_NOnia_MPS
+    fi
+
+    cd "${WORKDIR}"
+}
+
+has_prebuilt_helac() {
+    [[ -d "${WORKDIR}/HELAC-Onia-2.7.6" ]] && [[ -x "${WORKDIR}/HELAC-Onia-2.7.6/ho_cluster" ]]
+}
+
 write_py8_onia_config() {
     local pool_name="$1"
     local output_file="$2"
@@ -457,16 +483,26 @@ tar -xzf helac_package.tar.gz
 [ -f "${WORKDIR}/hepmc2.06.11.tgz" ] && HEPMC_SRC_TGZ="${WORKDIR}/hepmc2.06.11.tgz"
 [ -f "${WORKDIR}/HELAC-Onia-2.7.6.tar.gz" ] && HELAC_SRC_TAR="${WORKDIR}/HELAC-Onia-2.7.6.tar.gz"
 
-# Build dependencies from packaged sources
-ensure_hepmc
-
-# Setup HepMC paths after build
+# Setup HepMC paths when the package carries a prebuilt install.
 if [ -d "${HEPMC_PREFIX}/install" ]; then
     export PATH=${HEPMC_PREFIX}/install/bin:$PATH
     export LD_LIBRARY_PATH=${HEPMC_PREFIX}/install/lib:$LD_LIBRARY_PATH
 fi
 
-ensure_helac
+if has_prebuilt_helac; then
+    echo "[INFO] Reusing prebuilt HELAC-Onia runtime"
+    normalize_prebuilt_helac_links
+else
+    # Build dependencies from packaged sources.
+    ensure_hepmc
+
+    if [ -d "${HEPMC_PREFIX}/install" ]; then
+        export PATH=${HEPMC_PREFIX}/install/bin:$PATH
+        export LD_LIBRARY_PATH=${HEPMC_PREFIX}/install/lib:$LD_LIBRARY_PATH
+    fi
+
+    ensure_helac
+fi
 
 # Enter HELAC directory
 cd HELAC-Onia-2.7.6

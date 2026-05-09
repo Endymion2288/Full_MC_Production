@@ -31,6 +31,7 @@ EOS_HOST = "cceos.ihep.ac.cn"
 EOS_XRDFS_TARGET = f"root://{EOS_HOST}"
 EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
 EOS_BASE = f"root://{EOS_HOST}/{EOS_PATH_BASE}"
+EOS_OUTPUT = f"{EOS_BASE}/output"
 STORAGE_SITE = "T2_CN_Beijing"
 DEFAULT_TEST_CAMPAIGNS = ("JJP_DPS2", "JUP_DPS1")
 
@@ -40,6 +41,7 @@ REQUIRED_FILES = (
     "processing/run_chain.sh",
     "processing/templates/lhe_gen.sub",
     "processing/templates/processing.sub",
+    "processing/templates/ntuple.sub",
     "processing/templates/summary.sub",
     "processing/templates/summary.sh",
     "common/cmssw_configs/hepmc_to_GENSIM.py",
@@ -58,9 +60,18 @@ REQUIRED_COMMANDS = (
 BUNDLE_NAMES = {
     "lhe": "lhe_runtime_bundle.tar.gz",
     "processing": "processing_runtime_bundle.tar.gz",
+    "ntuple": "ntuple_runtime_bundle.tar.gz",
     "summary": "summary_runtime_bundle.tar.gz",
     "proxy": "proxy_bundle.tar.gz",
 }
+
+DEFAULT_LOG_ROOT = os.path.join(BASE_DIR, "log")
+DEFAULT_CMSSW15_RUNTIME_TARBALL = os.path.join(
+    BASE_DIR,
+    "common",
+    "packages",
+    "cmssw15_tpsonia2mumu_runtime.tar.gz",
+)
 
 POOL_DAG_LABELS = {
     "pool_jpsi_CSCO_g": "JpsiG_CSCO",
@@ -198,6 +209,11 @@ class WorkflowOptions:
         lhe_unwevt: Optional[int],
         dagman_max_jobs_submitted: int,
         dagman_max_jobs_idle: int,
+        log_root: str,
+        maxjobs_lhe: int,
+        maxjobs_processing: int,
+        maxjobs_ntuple: int,
+        cmssw15_runtime_tarball: Optional[str],
     ):
         self.jobs_per_campaign = jobs_per_campaign
         self.max_events = max_events
@@ -210,6 +226,11 @@ class WorkflowOptions:
         self.lhe_unwevt = lhe_unwevt
         self.dagman_max_jobs_submitted = dagman_max_jobs_submitted
         self.dagman_max_jobs_idle = dagman_max_jobs_idle
+        self.log_root = log_root
+        self.maxjobs_lhe = maxjobs_lhe
+        self.maxjobs_processing = maxjobs_processing
+        self.maxjobs_ntuple = maxjobs_ntuple
+        self.cmssw15_runtime_tarball = cmssw15_runtime_tarball
 
     def resolved_lhe_unwevt(self) -> int:
         if self.lhe_unwevt is not None:
@@ -229,6 +250,11 @@ class WorkflowOptions:
             "lhe_unwevt": self.resolved_lhe_unwevt(),
             "dagman_max_jobs_submitted": self.dagman_max_jobs_submitted,
             "dagman_max_jobs_idle": self.dagman_max_jobs_idle,
+            "log_root": self.log_root,
+            "maxjobs_lhe": self.maxjobs_lhe,
+            "maxjobs_processing": self.maxjobs_processing,
+            "maxjobs_ntuple": self.maxjobs_ntuple,
+            "cmssw15_runtime_tarball": self.cmssw15_runtime_tarball,
         }
 
 
@@ -699,7 +725,24 @@ def build_tpsonia2mumu_package(output_dir: str) -> Tuple[str, str]:
     return package_path, package_name
 
 
-def prepare_runtime_assets(output_dir: str, require_analysis_package: bool = False) -> Dict[str, str]:
+def resolve_cmssw15_runtime_tarball(path: Optional[str]) -> Optional[str]:
+    """Return a CMSSW15 ntuple runtime tarball path when one is available."""
+
+    if path:
+        resolved = os.path.abspath(path)
+        if not os.path.isfile(resolved):
+            raise FileNotFoundError(f"CMSSW15 runtime tarball does not exist: {resolved}")
+        return resolved
+    if os.path.isfile(DEFAULT_CMSSW15_RUNTIME_TARBALL):
+        return DEFAULT_CMSSW15_RUNTIME_TARBALL
+    return None
+
+
+def prepare_runtime_assets(
+    output_dir: str,
+    require_analysis_package: bool = False,
+    cmssw15_runtime_tarball: Optional[str] = None,
+) -> Dict[str, str]:
     """生成 LHE / processing / summary 运行 bundle。"""
 
     ensure_dir(output_dir)
@@ -741,27 +784,58 @@ def prepare_runtime_assets(output_dir: str, require_analysis_package: bool = Fal
         ),
         (os.path.join(BASE_DIR, "common", "octet_pdg.py"), "runtime/common/octet_pdg.py"),
     ]
-    if os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
-        package_path, package_name = build_tpsonia2mumu_package(output_dir)
-        processing_items.append(
-            (
-                package_path,
-                os.path.join("runtime", "common", "packages", package_name),
-            )
-        )
-        assets["tpsonia2mumu_package_path"] = package_path
-        assets["tpsonia2mumu_package_name"] = package_name
-    elif require_analysis_package:
-        raise FileNotFoundError(
-            "需要打包 TPS-Onia2MuMu，但 submodule 未初始化。"
-            "请执行 `git submodule update --init --recursive`。"
-        )
-
     processing_bundle_name = BUNDLE_NAMES["processing"]
     processing_bundle_path = os.path.join(output_dir, processing_bundle_name)
     build_bundle(processing_bundle_path, processing_items)
     assets["processing_bundle_path"] = processing_bundle_path
     assets["processing_bundle_name"] = processing_bundle_name
+
+    if require_analysis_package:
+        ntuple_items: List[Tuple[str, str]] = [
+            (os.path.join(BASE_DIR, "processing", "run_chain.sh"), "runtime/processing/run_chain.sh"),
+            (
+                os.path.join(BASE_DIR, "common", "cmssw_configs"),
+                "runtime/common/cmssw_configs",
+            ),
+            (os.path.join(BASE_DIR, "common", "octet_pdg.py"), "runtime/common/octet_pdg.py"),
+        ]
+        runtime_tarball = resolve_cmssw15_runtime_tarball(cmssw15_runtime_tarball)
+        if runtime_tarball:
+            ntuple_items.append(
+                (
+                    runtime_tarball,
+                    os.path.join(
+                        "runtime",
+                        "common",
+                        "packages",
+                        "cmssw15_tpsonia2mumu_runtime.tar.gz",
+                    ),
+                )
+            )
+            assets["cmssw15_runtime_tarball_path"] = runtime_tarball
+            assets["cmssw15_runtime_tarball_name"] = "cmssw15_tpsonia2mumu_runtime.tar.gz"
+        elif os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
+            package_path, package_name = build_tpsonia2mumu_package(output_dir)
+            ntuple_items.append(
+                (
+                    package_path,
+                    os.path.join("runtime", "common", "packages", package_name),
+                )
+            )
+            assets["tpsonia2mumu_package_path"] = package_path
+            assets["tpsonia2mumu_package_name"] = package_name
+        else:
+            raise FileNotFoundError(
+                "需要打包 TPS-Onia2MuMu，但既没有预编译 CMSSW15 runtime tarball，"
+                "也没有初始化 submodule。请提供 --cmssw15-runtime-tarball，"
+                "或执行 `git submodule update --init --recursive`。"
+            )
+
+        ntuple_bundle_name = BUNDLE_NAMES["ntuple"]
+        ntuple_bundle_path = os.path.join(output_dir, ntuple_bundle_name)
+        build_bundle(ntuple_bundle_path, ntuple_items)
+        assets["ntuple_bundle_path"] = ntuple_bundle_path
+        assets["ntuple_bundle_name"] = ntuple_bundle_name
 
     summary_bundle_name = BUNDLE_NAMES["summary"]
     summary_bundle_path = os.path.join(output_dir, summary_bundle_name)
@@ -822,6 +896,11 @@ class DAGBuilder:
             return "4", "12GB", "20GB"
         return "8", "20GB", "50GB"
 
+    def ntuple_resource_request(self) -> Tuple[str, str, str]:
+        if self.options.test_mode:
+            return "4", "8GB", "10GB"
+        return "4", "12GB", "20GB"
+
     def ensure_lhe_jobs(self, pool_name: str, required_count: int) -> None:
         """全局共享同一个 pool 的生成节点，避免跨 campaign 重复生成。"""
 
@@ -842,13 +921,15 @@ class DAGBuilder:
             jobs.append(job_name)
             specs.append(f"GEN:{pool_name}:{index}:{seed}")
             self.dag_lines.append(f"JOB {job_name} {os.path.join(BASE_DIR, 'processing/templates/lhe_gen.sub')}")
+            self.dag_lines.append(f"CATEGORY {job_name} lhe")
             self.dag_lines.append(
                 "VARS {job} pool=\"{pool}\" seed=\"{seed}\" "
                 "min_pt_conia=\"{min_pt_conia}\" min_pt_bonia=\"{min_pt_bonia}\" "
                 "min_pt_q=\"{min_pt_q}\" unwevt=\"{unwevt}\" test_mode=\"{test_mode}\" "
                 "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
                 "lhe_bundle_path=\"{lhe_bundle_path}\" lhe_bundle_name=\"{lhe_bundle_name}\" "
-                "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\"".format(
+                "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
+                "log_root=\"{log_root}\"".format(
                     job=job_name,
                     pool=dag_escape(pool.name),
                     seed=dag_escape(seed),
@@ -864,6 +945,7 @@ class DAGBuilder:
                     lhe_bundle_name=dag_escape(self.runtime_assets["lhe_bundle_name"]),
                     proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
                     proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
+                    log_root=dag_escape(self.options.log_root),
                 )
             )
             self.dag_lines.append(f"RETRY {job_name} 2")
@@ -905,6 +987,7 @@ class DAGBuilder:
         job_name = f"PROC_{campaign_name}_{job_index}"
         request_cpus, request_memory, request_disk = self.processing_resource_request()
         self.dag_lines.append(f"JOB {job_name} {os.path.join(BASE_DIR, 'processing/templates/processing.sub')}")
+        self.dag_lines.append(f"CATEGORY {job_name} processing")
         self.dag_lines.append(
             "VARS {job} campaign=\"{campaign}\" job_id=\"{job_id}\" "
             "inputs=\"{inputs}\" modes=\"{modes}\" analysis=\"{analysis}\" "
@@ -913,7 +996,8 @@ class DAGBuilder:
             "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
             "processing_bundle_path=\"{processing_bundle_path}\" "
             "processing_bundle_name=\"{processing_bundle_name}\" "
-            "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\"".format(
+            "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
+            "log_root=\"{log_root}\"".format(
                 job=job_name,
                 campaign=dag_escape(campaign.name),
                 job_id=dag_escape(job_index),
@@ -922,7 +1006,7 @@ class DAGBuilder:
                 analysis=dag_escape(campaign.analysis_type),
                 n_sources=dag_escape(campaign.n_sources),
                 max_events=dag_escape(self.options.max_events),
-                enable_ntuple=dag_escape(bool_string(self.options.enable_ntuple)),
+                enable_ntuple=dag_escape("false"),
                 cleanup=dag_escape(bool_string(self.options.cleanup)),
                 request_cpus=dag_escape(request_cpus),
                 request_memory=dag_escape(request_memory),
@@ -931,11 +1015,48 @@ class DAGBuilder:
                 processing_bundle_name=dag_escape(self.runtime_assets["processing_bundle_name"]),
                 proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
                 proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
+                log_root=dag_escape(self.options.log_root),
             )
         )
         self.dag_lines.append(f"RETRY {job_name} 1")
         if parent_jobs:
             self.dag_lines.append(f"PARENT {' '.join(parent_jobs)} CHILD {job_name}")
+        return job_name
+
+    def add_ntuple_job(self, campaign_name: str, job_index: int, parent_job: str) -> str:
+        campaign = CAMPAIGNS[campaign_name]
+        job_name = f"NTUPLE_{campaign_name}_{job_index}"
+        request_cpus, request_memory, request_disk = self.ntuple_resource_request()
+        miniaod_input = f"{EOS_OUTPUT}/{campaign.name}/{job_index}/output_MINIAOD.root"
+        self.dag_lines.append(f"JOB {job_name} {os.path.join(BASE_DIR, 'processing/templates/ntuple.sub')}")
+        self.dag_lines.append(f"CATEGORY {job_name} ntuple")
+        self.dag_lines.append(
+            "VARS {job} campaign=\"{campaign}\" job_id=\"{job_id}\" "
+            "analysis=\"{analysis}\" max_events=\"{max_events}\" cleanup=\"{cleanup}\" "
+            "miniaod_input=\"{miniaod_input}\" "
+            "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
+            "ntuple_bundle_path=\"{ntuple_bundle_path}\" ntuple_bundle_name=\"{ntuple_bundle_name}\" "
+            "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
+            "log_root=\"{log_root}\"".format(
+                job=job_name,
+                campaign=dag_escape(campaign.name),
+                job_id=dag_escape(job_index),
+                analysis=dag_escape(campaign.analysis_type),
+                max_events=dag_escape(self.options.max_events),
+                cleanup=dag_escape(bool_string(self.options.cleanup)),
+                miniaod_input=dag_escape(miniaod_input),
+                request_cpus=dag_escape(request_cpus),
+                request_memory=dag_escape(request_memory),
+                request_disk=dag_escape(request_disk),
+                ntuple_bundle_path=dag_escape(self.runtime_assets["ntuple_bundle_path"]),
+                ntuple_bundle_name=dag_escape(self.runtime_assets["ntuple_bundle_name"]),
+                proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
+                proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
+                log_root=dag_escape(self.options.log_root),
+            )
+        )
+        self.dag_lines.append(f"RETRY {job_name} 1")
+        self.dag_lines.append(f"PARENT {parent_job} CHILD {job_name}")
         return job_name
 
     def build(self, campaign_names: Sequence[str], dag_filename: str) -> str:
@@ -953,6 +1074,10 @@ class DAGBuilder:
             "",
             f"CONFIG {dagman_config_path}",
             "",
+            f"MAXJOBS lhe {self.options.maxjobs_lhe}",
+            f"MAXJOBS processing {self.options.maxjobs_processing}",
+            f"MAXJOBS ntuple {self.options.maxjobs_ntuple}",
+            "",
         ]
 
         for pool_name, required_count in self.pool_requirements.items():
@@ -965,7 +1090,10 @@ class DAGBuilder:
             if campaign.notes:
                 self.dag_lines.append(f"# 备注: {campaign.notes}")
             for job_index in range(self.options.jobs_per_campaign):
-                processing_jobs.append(self.add_processing_job(campaign_name, job_index))
+                processing_job = self.add_processing_job(campaign_name, job_index)
+                processing_jobs.append(processing_job)
+                if self.options.enable_ntuple:
+                    self.add_ntuple_job(campaign_name, job_index, processing_job)
             self.dag_lines.append("")
 
         if processing_jobs:
@@ -973,9 +1101,11 @@ class DAGBuilder:
             self.dag_lines.append(f"FINAL SUMMARY {os.path.join(BASE_DIR, 'processing/templates/summary.sub')}")
             self.dag_lines.append(
                 "VARS SUMMARY summary_bundle_path=\"{summary_bundle_path}\" "
-                "summary_bundle_name=\"{summary_bundle_name}\"".format(
+                "summary_bundle_name=\"{summary_bundle_name}\" "
+                "log_root=\"{log_root}\"".format(
                     summary_bundle_path=dag_escape(self.runtime_assets["summary_bundle_path"]),
                     summary_bundle_name=dag_escape(self.runtime_assets["summary_bundle_name"]),
+                    log_root=dag_escape(self.options.log_root),
                 )
             )
 
@@ -1205,10 +1335,15 @@ def execute_generation(
             "proxy_bundle_path": "<dry-run>/proxy_bundle.tar.gz",
             "proxy_bundle_name": BUNDLE_NAMES["proxy"],
         }
+        if options.enable_ntuple:
+            runtime_assets["ntuple_bundle_path"] = "<dry-run>/ntuple_runtime_bundle.tar.gz"
+            runtime_assets["ntuple_bundle_name"] = BUNDLE_NAMES["ntuple"]
     else:
+        ensure_dir(options.log_root)
         runtime_assets = prepare_runtime_assets(
             output_dir,
             require_analysis_package=options.enable_ntuple,
+            cmssw15_runtime_tarball=options.cmssw15_runtime_tarball,
         )
         proxy_bundle_path, proxy_bundle_name = build_proxy_bundle(output_dir, options.proxy_path)
         runtime_assets["proxy_bundle_path"] = proxy_bundle_path
@@ -1243,10 +1378,19 @@ def execute_generation(
     return 0
 
 
-def execute_prepare_runtime(output_dir: str, proxy_path: str) -> int:
+def execute_prepare_runtime(
+    output_dir: str,
+    proxy_path: str,
+    include_ntuple: bool,
+    cmssw15_runtime_tarball: Optional[str],
+) -> int:
     output_dir = os.path.abspath(output_dir)
     ensure_submit_visible_output_dir(output_dir)
-    runtime_assets = prepare_runtime_assets(output_dir)
+    runtime_assets = prepare_runtime_assets(
+        output_dir,
+        require_analysis_package=include_ntuple,
+        cmssw15_runtime_tarball=cmssw15_runtime_tarball,
+    )
     proxy_bundle_path, proxy_bundle_name = build_proxy_bundle(output_dir, proxy_path)
     runtime_assets["proxy_bundle_path"] = proxy_bundle_path
     runtime_assets["proxy_bundle_name"] = proxy_bundle_name
@@ -1337,6 +1481,37 @@ def add_common_generation_arguments(parser: argparse.ArgumentParser) -> None:
         default=100,
         help="DAGMan 允许同时处于 idle 状态的最大节点数。",
     )
+    parser.add_argument(
+        "--log-root",
+        default=DEFAULT_LOG_ROOT,
+        help="HTCondor stdout/stderr/event log 输出目录。",
+    )
+    parser.add_argument(
+        "--maxjobs-lhe",
+        type=int,
+        default=20,
+        help="DAGMan LHE category throttle。",
+    )
+    parser.add_argument(
+        "--maxjobs-processing",
+        type=int,
+        default=50,
+        help="DAGMan MiniAOD/processing category throttle。",
+    )
+    parser.add_argument(
+        "--maxjobs-ntuple",
+        type=int,
+        default=30,
+        help="DAGMan ntuple category throttle。",
+    )
+    parser.add_argument(
+        "--cmssw15-runtime-tarball",
+        default=None,
+        help=(
+            "预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball；"
+            "默认查找 common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz。"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="只打印 DAG，不写文件。")
 
 
@@ -1383,6 +1558,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--proxy-path",
         default=detect_proxy_path(),
         help="要一起打包到 worker 的代理路径。",
+    )
+    runtime_parser.add_argument(
+        "--include-ntuple",
+        action="store_true",
+        help="同时生成 ntuple runtime bundle。",
+    )
+    runtime_parser.add_argument(
+        "--cmssw15-runtime-tarball",
+        default=None,
+        help=(
+            "预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball；"
+            "默认查找 common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz。"
+        ),
     )
 
     generate_parser = subparsers.add_parser("generate", help="生成正式 DAG")
@@ -1464,6 +1652,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return execute_prepare_runtime(
             output_dir=args.output_dir,
             proxy_path=args.proxy_path,
+            include_ntuple=args.include_ntuple,
+            cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
         )
 
     if args.command in {"generate", "generate-test"}:
@@ -1480,6 +1670,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             lhe_unwevt=args.lhe_unwevt,
             dagman_max_jobs_submitted=args.dagman_max_jobs_submitted,
             dagman_max_jobs_idle=args.dagman_max_jobs_idle,
+            log_root=os.path.abspath(args.log_root),
+            maxjobs_lhe=args.maxjobs_lhe,
+            maxjobs_processing=args.maxjobs_processing,
+            maxjobs_ntuple=args.maxjobs_ntuple,
+            cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
         )
         return execute_generation(
             campaign_names=campaign_names,
