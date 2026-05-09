@@ -4,3 +4,13 @@ __pycache__/
 test/
 tests/
 .codex
+*.pyc
+tmp/
+xcheng.cc
+test_output/
+.claude/
+generated/
+output*/
+log_full/
+checks/
+.codex/

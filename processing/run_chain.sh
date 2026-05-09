@@ -650,12 +650,6 @@ run_cmsrun_cmssw15() {
     
     msg_info "Running cmsRun in el9 container for CMSSW_15..."
     
-    local script_content="
-cd \"${CMSSW_15_BASE}/src\"
-eval \$(scramv1 runtime -sh)
-cmsRun \"${cfg}\" \"\$@\"
-"
-    
     # Build the full command with arguments
     local tmp_script=$(mktemp --suffix=_cmsrun.sh)
     cat > "${tmp_script}" << SCRIPT_EOF
@@ -908,11 +902,11 @@ run_shower() {
         if [[ "$normalized_mode" == "phi_mpi_off" ]]; then
             # workbook_v2 默认模式：关闭 MPI，循环 hadronize 找 phi。
             msg_info "Running phi-enriched mode-1 shower (MPI off)..."
-            run_logged "shower_sps_${i}" ./shower_sps "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 1000
+            run_logged "shower_sps_${i}" ./shower_sps "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 5000
         elif [[ "$normalized_mode" == "phi_mpi_on_gluon" ]]; then
             # 扩展模式：开启 MPI，并交给 shower_phi 处理来源判定。
             msg_info "Running phi-enriched mode-2 shower (MPI on)..."
-            run_logged "shower_phi_${i}" ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 1000 1
+            run_logged "shower_phi_${i}" ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 5000 1
         else
             # 普通 shower。
             run_logged "shower_normal_${i}" ./shower_normal "${lhe_file}" "${hepmc_output}" "${shower_events}" 2.5 2.4 1000
@@ -1114,7 +1108,6 @@ run_ntuple() {
     
     NTUPLE_OUTPUT="${WORKDIR}/output_ntuple.root"
     MINIAOD_OUTPUT="${MINIAOD_OUTPUT:-${WORKDIR}/output_MINIAOD.root}"
-
     local analysis_mode=""
     case "${ANALYSIS_TYPE}" in
         "JJP") analysis_mode="JpsiJpsiPhi" ;;
