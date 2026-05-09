@@ -26,8 +26,8 @@ export CMSSW_15_BASE="${CMSSW_15_BASE:-/cvmfs/cms.cern.ch/el9_amd64_gcc12/cms/cm
 
 # T2_CN_Beijing XRootD storage paths
 export EOS_HOST="cceos.ihep.ac.cn"
-export EOS_XRDFS_TARGET="root://${EOS_HOST}"
-export EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
+export EOS_XRDFS_TARGET="${EOS_HOST}"
+export EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v3"
 export EOS_BASE="root://${EOS_HOST}/${EOS_PATH_BASE}"
 export EOS_LHE_POOL="${EOS_BASE}/lhe_pools"
 export EOS_OUTPUT="${EOS_BASE}/output"

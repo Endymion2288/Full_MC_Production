@@ -42,6 +42,11 @@ UNWEVT_OVERRIDE=0
 HEPMC_SRC_TGZ=""
 HELAC_SRC_TAR=""
 HEPMC_PREFIX="${WORKDIR}/HepMC/HepMC-2.06.11"
+JOB_LOG_DIR="${WORKDIR}/command_logs"
+COMMAND_LOG_INDEX=0
+LAST_STDOUT_LOG=""
+LAST_STDERR_LOG=""
+LOG_STAGEOUT_ATTEMPTED=0
 
 # T2_CN_Beijing XRootD storage paths
 EOS_HOST="cceos.ihep.ac.cn"
@@ -51,6 +56,148 @@ EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v3"
 # ----------------------------------------------------------------------------
 # Helper functions
 # ----------------------------------------------------------------------------
+
+msg_info() { echo "[INFO] $1"; }
+msg_warn() { echo "[WARN] $1"; }
+msg_error() { echo "[ERROR] $1" >&2; }
+
+sanitize_log_label() {
+    local raw_label="$1"
+    printf '%s' "${raw_label}" | sed 's/[^A-Za-z0-9._-]/_/g'
+}
+
+ensure_job_log_dir() {
+    mkdir -p "${JOB_LOG_DIR}"
+}
+
+show_log_tail() {
+    local label="$1"
+    local file_path="$2"
+    local max_lines="$3"
+    if [[ -s "${file_path}" ]]; then
+        msg_warn "${label} 摘要 (${file_path}, tail -n ${max_lines})"
+        tail -n "${max_lines}" "${file_path}"
+    fi
+}
+
+run_logged() {
+    local label="$1"
+    shift
+
+    ensure_job_log_dir
+
+    COMMAND_LOG_INDEX=$((COMMAND_LOG_INDEX + 1))
+    local safe_label=""
+    safe_label=$(sanitize_log_label "${label}")
+    local log_prefix=""
+    printf -v log_prefix "%s/%03d_%s" "${JOB_LOG_DIR}" "${COMMAND_LOG_INDEX}" "${safe_label}"
+    local stdout_log="${log_prefix}.stdout"
+    local stderr_log="${log_prefix}.stderr"
+    local rc=0
+    local stdout_size=0
+    local stderr_size=0
+
+    LAST_STDOUT_LOG="${stdout_log}"
+    LAST_STDERR_LOG="${stderr_log}"
+
+    msg_info "执行 ${label}，完整日志写入 ${log_prefix}.[stdout|stderr]"
+    if "$@" >"${stdout_log}" 2>"${stderr_log}"; then
+        stdout_size=$(wc -c < "${stdout_log}" 2>/dev/null || echo 0)
+        stderr_size=$(wc -c < "${stderr_log}" 2>/dev/null || echo 0)
+        msg_info "${label} 完成 (stdout=${stdout_size} B, stderr=${stderr_size} B)"
+        return 0
+    fi
+
+    rc=$?
+    msg_error "${label} 失败 (rc=${rc})"
+    show_log_tail "${label} stderr" "${stderr_log}" 80 >&2
+    show_log_tail "${label} stdout" "${stdout_log}" 40
+    return "${rc}"
+}
+
+run_logged_bash() {
+    local label="$1"
+    local command_str="$2"
+    run_logged "${label}" bash -lc "${command_str}"
+}
+
+make_remote_dir() {
+    local remote_subpath="$1"
+    xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${remote_subpath}" >/dev/null 2>&1 || {
+        msg_warn "远端目录创建失败或已存在: ${EOS_PATH_BASE}/${remote_subpath}"
+        return 1
+    }
+    return 0
+}
+
+stage_out_worker_logs() {
+    if [[ "${LOG_STAGEOUT_ATTEMPTED}" -eq 1 ]]; then
+        return 0
+    fi
+    LOG_STAGEOUT_ATTEMPTED=1
+
+    if [[ "${SKIP_STAGEOUT:-0}" -eq 1 ]]; then
+        msg_info "SKIP_STAGEOUT=1, skip log stageout"
+        return 0
+    fi
+
+    ensure_job_log_dir
+
+    local remote_log_dir="${OUTPUT_DIR}/logs"
+    local bundle_name="logs_${POOL_NAME}_${MY_SEED}.tar.gz"
+    local bundle_path="${WORKDIR}/${bundle_name}"
+    local manifest_path="${WORKDIR}/log_manifest_${POOL_NAME}_${MY_SEED}.txt"
+
+    {
+        echo "pool=${POOL_NAME}"
+        echo "seed=${MY_SEED}"
+        echo "process=${PROCESS_STRING}"
+        echo "min_pt_conia=${MIN_PT_CONIA}"
+        echo "min_pt_bonia=${MIN_PT_BONIA}"
+        echo "min_pt_q=${MIN_PT_Q}"
+        echo "unwevt=${UNWEVT}"
+        echo "nmc=${NMC}"
+        echo "preunw=${PREUNW}"
+    } > "${manifest_path}"
+
+    (
+        cd "${WORKDIR}" && \
+        tar -czf "${bundle_path}" \
+            command_logs \
+            log_manifest_"${POOL_NAME}"_"${MY_SEED}".txt \
+            py8_onia_user.inp \
+            sample_"${POOL_NAME}"_"${MY_SEED}"_converted.lhe \
+            helac_run.log \
+            HELAC-Onia-2.7.6/run_config.ho \
+            HELAC-Onia-2.7.6/input/user.inp \
+            HELAC-Onia-2.7.6/PROC_HO_0/results/results.out \
+            HELAC-Onia-2.7.6/PROC_HO_0/results/results.lhe \
+            >/dev/null 2>&1 || true
+    )
+
+    if [[ ! -f "${bundle_path}" ]]; then
+        msg_warn "未生成日志 bundle，跳过远端日志传输"
+        return 0
+    fi
+
+    make_remote_dir "${remote_log_dir}" || true
+    local remote_url="root://${EOS_HOST}/${EOS_PATH_BASE}/${remote_log_dir}/${bundle_name}"
+    msg_info "上传完整日志到: ${remote_url}"
+    if xrdcp --nopbar --force "${bundle_path}" "${remote_url}" >/dev/null 2>&1; then
+        msg_info "完整日志已上传: ${remote_url}"
+    else
+        msg_warn "完整日志上传失败: ${remote_url}"
+    fi
+}
+
+upload_logs_on_exit() {
+    local exit_code=$?
+    set +e
+    stage_out_worker_logs
+    exit "${exit_code}"
+}
+
+trap upload_logs_on_exit EXIT
 
 setup_build_env() {
     # Minimal environment for building HepMC/HELAC inside the worker node
@@ -90,16 +237,16 @@ ensure_hepmc() {
         return 1
     fi
 
-    echo "[INFO] Building HepMC from ${HEPMC_SRC_TGZ}..."
+    msg_info "Building HepMC from ${HEPMC_SRC_TGZ}..."
     mkdir -p "${WORKDIR}/HepMC"
-    tar -xzf "${HEPMC_SRC_TGZ}" -C "${WORKDIR}/HepMC"
+    run_logged "untar_hepmc" tar -xzf "${HEPMC_SRC_TGZ}" -C "${WORKDIR}/HepMC"
     cd "${HEPMC_PREFIX}"
     mkdir -p build install
     cd build
-    "${HEPMC_PREFIX}/configure" --prefix="${HEPMC_PREFIX}/install" --with-momentum=GEV --with-length=MM
-    make -j 2
-    make check
-    make install
+    run_logged "configure_hepmc" "${HEPMC_PREFIX}/configure" --prefix="${HEPMC_PREFIX}/install" --with-momentum=GEV --with-length=MM
+    run_logged "make_hepmc" make -j 2
+    run_logged "check_hepmc" make check
+    run_logged "install_hepmc" make install
     cd "${WORKDIR}"
 }
 
@@ -114,8 +261,8 @@ ensure_helac() {
         return 1
     fi
 
-    echo "[INFO] Unpacking HELAC-Onia from ${HELAC_SRC_TAR}..."
-    tar -xzf "${HELAC_SRC_TAR}" -C "${WORKDIR}"
+    msg_info "Unpacking HELAC-Onia from ${HELAC_SRC_TAR}..."
+    run_logged "untar_helac" tar -xzf "${HELAC_SRC_TAR}" -C "${WORKDIR}"
 
     cd "${WORKDIR}/HELAC-Onia-2.7.6"
 
@@ -125,8 +272,8 @@ ensure_helac() {
     # Fix heptoptagger interface to compile with newer gcc
     sed -i 's/HEPTopTagger::HEPTopTagger /HEPTopTagger /g' analysis/heptoptagger/heptoptagger_fjcore_interface.cc
 
-    echo "[INFO] Configuring HELAC-Onia..."
-    ./config
+    msg_info "Configuring HELAC-Onia..."
+    run_logged "config_helac" ./config
     cd "${WORKDIR}"
 }
 
@@ -203,8 +350,8 @@ build_lhe_converter_if_needed() {
         echo "[WARN] 当前 gfortran 不支持 -fallow-argument-mismatch，改用兼容编译参数"
     fi
 
-    echo "[INFO] Building lhe_pythia6_pythia8 converter..."
-    gfortran "${build_flags[@]}" -o "${WORKDIR}/lhe_pythia6_pythia8" "${WORKDIR}/lhe_pythia6_pythia8.f"
+    msg_info "Building lhe_pythia6_pythia8 converter..."
+    run_logged "build_lhe_converter" gfortran "${build_flags[@]}" -o "${WORKDIR}/lhe_pythia6_pythia8" "${WORKDIR}/lhe_pythia6_pythia8.f"
 }
 
 verify_lhe_octet_codes() {
@@ -442,6 +589,8 @@ fi
 echo "Output dir:     $OUTPUT_DIR"
 echo "=============================================="
 
+ensure_job_log_dir
+
 # Check for HELAC package
 if [ ! -f "helac_package.tar.gz" ]; then
     echo "Error: helac_package.tar.gz not found"
@@ -450,8 +599,7 @@ fi
 
 # Prepare build environment and unpack archives
 setup_build_env
-echo "Unpacking helac_package.tar.gz..."
-tar -xzf helac_package.tar.gz
+run_logged "untar_helac_package" tar -xzf helac_package.tar.gz
 
 # Locate source tarballs (either freshly unpacked or already present)
 [ -f "${WORKDIR}/hepmc2.06.11.tgz" ] && HEPMC_SRC_TGZ="${WORKDIR}/hepmc2.06.11.tgz"
@@ -510,11 +658,13 @@ EOF
 # 强制同步 runtime user.inp，避免静态模板中的旧积分参数覆盖掉当前作业设置。
 prepare_runtime_user_inp "$(pwd)"
 
-echo "Running HELAC-Onia..."
-./ho_cluster < run_config.ho | tee ../helac_run.log
+msg_info "Running HELAC-Onia..."
+run_logged_bash "helac_ho_cluster" "cd '$(pwd)' && ./ho_cluster < run_config.ho"
+HELAC_RUN_LOG="${LAST_STDOUT_LOG}"
+cp "${HELAC_RUN_LOG}" ../helac_run.log
 
 # Find output LHE file
-RUN_DIR=$(grep "INFO: Results are collected in" ../helac_run.log | \
+RUN_DIR=$(grep "INFO: Results are collected in" "${HELAC_RUN_LOG}" | \
           sed -r -e "s,^.*(PROC_HO_[0-9]+)\/.*$,\1,g" | head -1)
 
 if [ -z "$RUN_DIR" ]; then
@@ -556,7 +706,7 @@ CONVERTED_LHE_FILE="${WORKDIR}/sample_${POOL_NAME}_${MY_SEED}_converted.lhe"
 
 if write_py8_onia_config "${POOL_NAME}" "${PY8_ONIA_CONFIG}" && build_lhe_converter_if_needed; then
     echo "[INFO] Running lhe_pythia6_pythia8 converter..."
-    if "${WORKDIR}/lhe_pythia6_pythia8" "${LHE_FILE}" "${PY8_ONIA_CONFIG}" "${CONVERTED_LHE_FILE}"; then
+    if run_logged "lhe_pythia6_pythia8" "${WORKDIR}/lhe_pythia6_pythia8" "${LHE_FILE}" "${PY8_ONIA_CONFIG}" "${CONVERTED_LHE_FILE}"; then
         if [[ -f "${CONVERTED_LHE_FILE}" ]]; then
             CONVERTED_EVENT_COUNT=$(count_lhe_events "${CONVERTED_LHE_FILE}")
             echo "[INFO] 转换后 LHE 事件数: ${CONVERTED_EVENT_COUNT}"
@@ -596,13 +746,13 @@ if [ "${SKIP_STAGEOUT:-0}" -eq 1 ]; then
     echo "[INFO] SKIP_STAGEOUT=1, skip XRootD stageout"
 else
     echo "Creating remote directory on T2_CN_Beijing..."
-    xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${OUTPUT_DIR}" || {
+    xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${OUTPUT_DIR}" >/dev/null 2>&1 || {
         echo "Warning: mkdir failed (directory may already exist)"
     }
 
     OUTPUT_FILE="root://${EOS_HOST}/${EOS_PATH_BASE}/${OUTPUT_DIR}/sample_${POOL_NAME}_${MY_SEED}.lhe"
     echo "Staging out LHE file to: ${OUTPUT_FILE}"
-    xrdcp --nopbar --force "${FINAL_LHE_FILE}" "${OUTPUT_FILE}" || {
+    run_logged "xrdcp_lhe_stageout" xrdcp --nopbar --force "${FINAL_LHE_FILE}" "${OUTPUT_FILE}" || {
         echo "Error: Failed to stage out LHE file"
         exit 1
     }

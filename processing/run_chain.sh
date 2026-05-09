@@ -65,7 +65,7 @@ CMSSW_15_BASE="${CMSSW_15_BASE:-/cvmfs/cms.cern.ch/el9_amd64_gcc12/cms/cmssw/CMS
 
 # T2_CN_Beijing XRootD storage paths
 EOS_HOST="cceos.ihep.ac.cn"
-EOS_XRDFS_TARGET="root://${EOS_HOST}"
+EOS_XRDFS_TARGET="${EOS_HOST}"
 EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v3"
 EOS_BASE="root://${EOS_HOST}/${EOS_PATH_BASE}"
 EOS_LHE_POOL="${EOS_BASE}/lhe_pools"
@@ -317,7 +317,7 @@ check_remote_file() {
         local host_path="${url#root://}"
         local host="${host_path%%/*}"
         local path="/${host_path#*/}"
-        run_xrdfs "root://${host}" stat "${path}" &>/dev/null
+        run_xrdfs "${host}" stat "${path}" &>/dev/null
         return $?
     else
         # Local file check

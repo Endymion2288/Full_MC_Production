@@ -27,11 +27,12 @@ DEFAULT_OUTPUT_DIR = os.path.join(BASE_DIR, "generated")
 TEST_OUTPUT_DIR = os.path.join(BASE_DIR, "tests", "generated")
 
 EOS_HOST = "cceos.ihep.ac.cn"
-EOS_XRDFS_TARGET = f"root://{EOS_HOST}"
+EOS_XRDFS_TARGET = EOS_HOST
 EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production_v3"
 EOS_BASE = f"root://{EOS_HOST}/{EOS_PATH_BASE}"
 STORAGE_SITE = "T2_CN_Beijing"
 DEFAULT_TEST_CAMPAIGNS = ("JJP_DPS2_CS", "JJP_DPS2_G", "JUP_DPS1")
+POOL_SCAN_CACHE_ENV = "DAG_GENERATOR_POOL_SCAN_CACHE"
 
 REQUIRED_FILES = (
     "common/octet_pdg.py",
@@ -431,6 +432,8 @@ MODE_LABELS = OrderedDict(
     ]
 )
 
+_POOL_SCAN_CACHE: Optional[Dict[str, int]] = None
+
 
 def real_pool_names(pool_name: str) -> List[str]:
     return [pool_name]
@@ -493,6 +496,39 @@ def command_exists(command: str) -> bool:
     return shutil.which(command) is not None
 
 
+def load_pool_scan_cache() -> Dict[str, int]:
+    """可选地从外部 JSON 读取已知 pool 计数，绕开本地 xrdfs 子进程兼容性问题。"""
+
+    global _POOL_SCAN_CACHE
+    if _POOL_SCAN_CACHE is not None:
+        return _POOL_SCAN_CACHE
+
+    cache_path = os.environ.get(POOL_SCAN_CACHE_ENV, "").strip()
+    if not cache_path:
+        _POOL_SCAN_CACHE = {}
+        return _POOL_SCAN_CACHE
+
+    try:
+        with open(cache_path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        _POOL_SCAN_CACHE = {}
+        return _POOL_SCAN_CACHE
+
+    cache: Dict[str, int] = {}
+    if isinstance(raw, dict):
+        for pool_name, value in raw.items():
+            if isinstance(value, dict):
+                value = value.get("remote_count")
+            try:
+                cache[str(pool_name)] = int(value)
+            except (TypeError, ValueError):
+                continue
+
+    _POOL_SCAN_CACHE = cache
+    return _POOL_SCAN_CACHE
+
+
 def check_proxy_valid(proxy_path: str) -> Tuple[bool, Optional[int], Optional[str]]:
     """返回代理是否可用、剩余秒数以及错误信息。"""
 
@@ -527,6 +563,10 @@ def check_proxy_valid(proxy_path: str) -> Tuple[bool, Optional[int], Optional[st
 
 def count_lhe_files_on_t2(pool_name: str, proxy_path: str) -> Tuple[int, Optional[str]]:
     """统计远端 pool 内已有的 .lhe 文件数量。"""
+
+    cache = load_pool_scan_cache()
+    if pool_name in cache:
+        return cache[pool_name], None
 
     storage_name = pool_storage_name(pool_name)
     local_proxy_path = ensure_local_xrootd_proxy(proxy_path)
