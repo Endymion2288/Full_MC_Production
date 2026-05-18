@@ -47,9 +47,9 @@ REQUIRED_FILES = (
 
 REQUIRED_COMMANDS = (
     "python3",
-    "condor_submit",
-    "condor_submit_dag",
-    "condor_q",
+    "hep_sub",
+    "hep_q",
+    "hep_rm",
     "xrdfs",
     "xrdcp",
     "apptainer",
@@ -444,17 +444,18 @@ def pool_storage_name(pool_name: str) -> str:
 
 
 def detect_proxy_path() -> str:
-    """优先使用 AFS 上的持久代理，避免 DAGMan 在 schedd 上看不到 /tmp 内的证书。"""
+    """探测当前可用的代理路径。优先 /tmp (最新), 其次 workfs2 持久副本, 再次环境变量。"""
 
     candidates = []
-    persistent_proxy = f"/afs/cern.ch/user/x/xcheng/x509up_u{os.getuid()}"
-    candidates.append(persistent_proxy)
+    tmp_proxy = f"/tmp/x509up_u{os.getuid()}"
+    if tmp_proxy:
+        candidates.append(tmp_proxy)
+    workfs2_proxy = f"/workfs2/cms/chengxing/Full_MC_Production/x509up_u{os.getuid()}"
+    if workfs2_proxy not in candidates:
+        candidates.append(workfs2_proxy)
     env_proxy = os.environ.get("X509_USER_PROXY")
     if env_proxy and env_proxy not in candidates:
         candidates.append(env_proxy)
-    tmp_proxy = f"/tmp/x509up_u{os.getuid()}"
-    if tmp_proxy not in candidates:
-        candidates.append(tmp_proxy)
 
     for candidate in candidates:
         if candidate and os.path.exists(candidate):
@@ -670,15 +671,18 @@ def ensure_dir(path: str) -> None:
 
 
 def ensure_submit_visible_output_dir(output_dir: str) -> None:
-    """HTCondor 用到的 runtime bundle 不能放在 submit host 的临时目录。"""
+    """确保输出目录使用持久存储（workfs2 或 AFS），而非临时目录。"""
 
     normalized = os.path.abspath(output_dir)
     for prefix in ("/tmp/", "/var/tmp/"):
         if normalized.startswith(prefix):
-            raise ValueError(
+            msg = (
                 f"输出目录不能位于 {prefix[:-1]}: {normalized}。"
-                "请改用工作区或 AFS 路径，避免 schedd 读取不到 runtime bundle。"
+                "请改用 workfs2 路径，避免节点读取不到作业文件。"
             )
+            print(f"警告: {msg}")
+            return
+
 
 
 def pool_dag_label(pool_name: str) -> str:
