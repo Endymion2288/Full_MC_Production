@@ -198,6 +198,8 @@ class WorkflowOptions:
         lhe_unwevt: Optional[int],
         dagman_max_jobs_submitted: int,
         dagman_max_jobs_idle: int,
+        local_log_dir: str = "",
+        local_output_base: str = "",
     ):
         self.jobs_per_campaign = jobs_per_campaign
         self.max_events = max_events
@@ -210,6 +212,8 @@ class WorkflowOptions:
         self.lhe_unwevt = lhe_unwevt
         self.dagman_max_jobs_submitted = dagman_max_jobs_submitted
         self.dagman_max_jobs_idle = dagman_max_jobs_idle
+        self.local_log_dir = local_log_dir
+        self.local_output_base = local_output_base
 
     def resolved_lhe_unwevt(self) -> int:
         if self.lhe_unwevt is not None:
@@ -229,6 +233,8 @@ class WorkflowOptions:
             "lhe_unwevt": self.resolved_lhe_unwevt(),
             "dagman_max_jobs_submitted": self.dagman_max_jobs_submitted,
             "dagman_max_jobs_idle": self.dagman_max_jobs_idle,
+            "local_log_dir": self.local_log_dir,
+            "local_output_base": self.local_output_base,
         }
 
 
@@ -596,19 +602,56 @@ def count_lhe_files_on_t2(pool_name: str, proxy_path: str) -> Tuple[int, Optiona
     return count, None
 
 
-def scan_existing_pools(pool_requirements: Dict[str, int], proxy_path: str) -> Dict[str, Dict[str, object]]:
-    """扫描远端已有 LHE 池，数量不足时视为需要全量重生。"""
+def count_lhe_files_local(pool_name: str, local_output_base: str) -> Tuple[int, Optional[str]]:
+    """统计本地 pool 内已有的 .lhe 文件数量。"""
+
+    cache = load_pool_scan_cache()
+    cache_key = f"local_{pool_name}"
+    if cache_key in cache:
+        return cache[cache_key], None
+
+    storage_name = pool_storage_name(pool_name)
+    local_pool_dir = os.path.join(local_output_base, "lhe_pools", storage_name)
+
+    try:
+        if not os.path.exists(local_pool_dir):
+            return 0, None
+
+        count = 0
+        for filename in os.listdir(local_pool_dir):
+            if filename.endswith(".lhe"):
+                count += 1
+
+        return count, None
+    except Exception as exc:
+        return 0, str(exc)
+
+
+def scan_existing_pools(pool_requirements: Dict[str, int], proxy_path: str, local_output_base: Optional[str] = None) -> Dict[str, Dict[str, object]]:
+    """扫描已有 LHE 池，数量不足时视为需要全量重生。支持本地和远程扫描。"""
 
     result: Dict[str, Dict[str, object]] = OrderedDict()
     for pool_name, required_count in pool_requirements.items():
-        count, error = count_lhe_files_on_t2(pool_name, proxy_path)
-        result[pool_name] = {
-            "required_count": required_count,
-            "remote_count": count,
-            "use_existing": error is None and count >= required_count,
-            "error": error,
-            "remote_path": f"{EOS_BASE}/lhe_pools/{pool_storage_name(pool_name)}",
-        }
+        if local_output_base:
+            # 本地扫描
+            count, error = count_lhe_files_local(pool_name, local_output_base)
+            result[pool_name] = {
+                "required_count": required_count,
+                "remote_count": count,
+                "use_existing": error is None and count >= required_count,
+                "error": error,
+                "remote_path": f"{local_output_base}/lhe_pools/{pool_storage_name(pool_name)}",
+            }
+        else:
+            # 远程扫描
+            count, error = count_lhe_files_on_t2(pool_name, proxy_path)
+            result[pool_name] = {
+                "required_count": required_count,
+                "remote_count": count,
+                "use_existing": error is None and count >= required_count,
+                "error": error,
+                "remote_path": f"{EOS_BASE}/lhe_pools/{pool_storage_name(pool_name)}",
+            }
     return result
 
 
@@ -819,6 +862,8 @@ class DAGBuilder:
         return "8", "15GB", "10GB"
 
     def processing_resource_request(self) -> Tuple[str, str, str]:
+        if os.environ.get("PREMIX_INPUT_MODE") == "localcache":
+            return "4", "12GB", os.environ.get("PREMIX_LOCALCACHE_REQUEST_DISK", "80GB")
         if self.options.test_mode:
             return "4", "12GB", "20GB"
         return "8", "20GB", "50GB"
@@ -844,12 +889,13 @@ class DAGBuilder:
             specs.append(f"GEN:{pool_name}:{index}:{seed}")
             self.dag_lines.append(f"JOB {job_name} {os.path.join(BASE_DIR, 'processing/templates/lhe_gen.sub')}")
             self.dag_lines.append(
-                "VARS {job} pool=\"{pool}\" seed=\"{seed}\" "
-                "min_pt_conia=\"{min_pt_conia}\" min_pt_bonia=\"{min_pt_bonia}\" "
-                "min_pt_q=\"{min_pt_q}\" unwevt=\"{unwevt}\" test_mode=\"{test_mode}\" "
-                "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
-                "lhe_bundle_path=\"{lhe_bundle_path}\" lhe_bundle_name=\"{lhe_bundle_name}\" "
-                "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\"".format(
+                'VARS {job} pool="{pool}" seed="{seed}" '
+                'min_pt_conia="{min_pt_conia}" min_pt_bonia="{min_pt_bonia}" '
+                'min_pt_q="{min_pt_q}" unwevt="{unwevt}" test_mode="{test_mode}" '
+                'request_cpus="{request_cpus}" request_memory="{request_memory}" request_disk="{request_disk}" '
+                'lhe_bundle_path="{lhe_bundle_path}" lhe_bundle_name="{lhe_bundle_name}" '
+                'proxy_bundle_path="{proxy_bundle_path}" proxy_bundle_name="{proxy_bundle_name}" '
+                'LOCAL_LOG_DIR="{local_log_dir}" LOCAL_OUTPUT_BASE="{local_output_base}"'.format(
                     job=job_name,
                     pool=dag_escape(pool.name),
                     seed=dag_escape(seed),
@@ -865,6 +911,8 @@ class DAGBuilder:
                     lhe_bundle_name=dag_escape(self.runtime_assets["lhe_bundle_name"]),
                     proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
                     proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
+                    local_log_dir=dag_escape(self.options.local_log_dir),
+                    local_output_base=dag_escape(self.options.local_output_base),
                 )
             )
             self.dag_lines.append(f"RETRY {job_name} 2")
@@ -899,14 +947,19 @@ class DAGBuilder:
         request_cpus, request_memory, request_disk = self.processing_resource_request()
         self.dag_lines.append(f"JOB {job_name} {os.path.join(BASE_DIR, 'processing/templates/processing.sub')}")
         self.dag_lines.append(
-            "VARS {job} campaign=\"{campaign}\" job_id=\"{job_id}\" "
-            "inputs=\"{inputs}\" modes=\"{modes}\" analysis=\"{analysis}\" "
-            "n_sources=\"{n_sources}\" max_events=\"{max_events}\" "
-            "enable_ntuple=\"{enable_ntuple}\" cleanup=\"{cleanup}\" "
-            "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
-            "processing_bundle_path=\"{processing_bundle_path}\" "
-            "processing_bundle_name=\"{processing_bundle_name}\" "
-            "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\"".format(
+            'VARS {job} campaign="{campaign}" job_id="{job_id}" '
+            'inputs="{inputs}" modes="{modes}" analysis="{analysis}" '
+            'n_sources="{n_sources}" max_events="{max_events}" '
+            'enable_ntuple="{enable_ntuple}" cleanup="{cleanup}" '
+            'request_cpus="{request_cpus}" request_memory="{request_memory}" request_disk="{request_disk}" '
+            'processing_bundle_path="{processing_bundle_path}" '
+            'processing_bundle_name="{processing_bundle_name}" '
+            'proxy_bundle_path="{proxy_bundle_path}" proxy_bundle_name="{proxy_bundle_name}" '
+            'LOCAL_LOG_DIR="{local_log_dir}" LOCAL_OUTPUT_BASE="{local_output_base}" '
+            'PREMIX_INPUT_MODE="{premix_input_mode}" '
+            'PREMIX_REDIRECTOR="{premix_redirector}" '
+            'PREMIX_CACHE_FILES="{premix_cache_files}" '
+            'PREMIX_CACHE_REDIRECTOR="{premix_cache_redirector}"'.format(
                 job=job_name,
                 campaign=dag_escape(campaign.name),
                 job_id=dag_escape(job_index),
@@ -924,6 +977,12 @@ class DAGBuilder:
                 processing_bundle_name=dag_escape(self.runtime_assets["processing_bundle_name"]),
                 proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
                 proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
+                local_log_dir=dag_escape(self.options.local_log_dir),
+                local_output_base=dag_escape(self.options.local_output_base),
+                premix_input_mode=dag_escape(os.environ.get("PREMIX_INPUT_MODE", "eoscms")),
+                premix_redirector=dag_escape(os.environ.get("PREMIX_REDIRECTOR", "root://eoscms.cern.ch")),
+                premix_cache_files=dag_escape(os.environ.get("PREMIX_CACHE_FILES", "1")),
+                premix_cache_redirector=dag_escape(os.environ.get("PREMIX_CACHE_REDIRECTOR", os.environ.get("PREMIX_REDIRECTOR", "root://eoscms.cern.ch"))),
             )
         )
         self.dag_lines.append(f"RETRY {job_name} 1")
@@ -1076,6 +1135,7 @@ def validate_environment(
     proxy_path: str,
     scan_existing: bool,
     strict_analysis_packages: bool,
+    local_output_base: Optional[str] = None,
 ) -> int:
     required = campaign_names or []
     exit_code = 0
@@ -1134,15 +1194,16 @@ def validate_environment(
             print(f"  - {pool_name:<24} 至少 {count} 个文件")
 
         if scan_existing and proxy_ok:
-            print("\n远端 pool 扫描:")
-            scan = scan_existing_pools(pool_requirements, proxy_path)
+            scan_target = "本地" if local_output_base else "远端"
+            print(f"\n{scan_target} pool 扫描:")
+            scan = scan_existing_pools(pool_requirements, proxy_path, local_output_base)
             for pool_name, info in scan.items():
                 status = "复用已有文件" if info["use_existing"] else "需要重新生成"
                 error = info.get("error")
                 suffix = f", 错误={error}" if error else ""
                 print(
                     f"  - {pool_name:<24} "
-                    f"远端 {info['remote_count']}/{info['required_count']} -> {status}{suffix}"
+                    f"{scan_target} {info['remote_count']}/{info['required_count']} -> {status}{suffix}"
                 )
 
     print("\n校验结束")
@@ -1175,7 +1236,7 @@ def execute_generation(
             for pool_name, required_count in pool_requirements.items()
         )
     elif options.scan_existing:
-        existing_pools = scan_existing_pools(pool_requirements, options.proxy_path)
+        existing_pools = scan_existing_pools(pool_requirements, options.proxy_path, options.local_output_base)
     else:
         existing_pools = OrderedDict(
             (
@@ -1332,6 +1393,16 @@ def add_common_generation_arguments(parser: argparse.ArgumentParser) -> None:
         default=100,
         help="DAGMan 允许同时处于 idle 状态的最大节点数。",
     )
+    parser.add_argument(
+        "--local-log-dir",
+        default="",
+        help="本地日志目录（用于本地 HTCondor 集群）",
+    )
+    parser.add_argument(
+        "--local-output-base",
+        default="/home/storage29/users/xingcheng/MC_Production_result",
+        help="本地输出基础目录（用于本地 HTCondor 集群）",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只打印 DAG，不写文件。")
 
 
@@ -1370,6 +1441,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict-analysis-packages",
         action="store_true",
         help="把 jjp/jup 分析包也当作硬依赖。",
+    )
+    validate_parser.add_argument(
+        "--local-output-base",
+        default="/home/storage29/users/xingcheng/MC_Production_result",
+        help="本地输出基础目录（用于本地 HTCondor 集群）",
     )
 
     runtime_parser = subparsers.add_parser("prepare-runtime", help="生成 worker 运行所需的压缩包")
@@ -1453,6 +1529,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             proxy_path=args.proxy_path,
             scan_existing=args.scan_existing,
             strict_analysis_packages=args.strict_analysis_packages,
+            local_output_base=args.local_output_base,
         )
 
     if args.command == "prepare-runtime":
@@ -1475,6 +1552,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             lhe_unwevt=args.lhe_unwevt,
             dagman_max_jobs_submitted=args.dagman_max_jobs_submitted,
             dagman_max_jobs_idle=args.dagman_max_jobs_idle,
+            local_log_dir=args.local_log_dir,
+            local_output_base=args.local_output_base,
         )
         return execute_generation(
             campaign_names=campaign_names,

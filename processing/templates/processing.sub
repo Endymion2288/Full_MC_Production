@@ -1,18 +1,15 @@
 # ==============================================================================
-# processing.sub - shower/mix/CMSSW 处理节点 submit 模板
+# processing.sub - shower/mix/CMSSW 处理节点 submit 模板 (通用)
 # ==============================================================================
-# 由 dag_generator.py 通过 DAGMan VARS 注入以下变量：
-#   campaign / job_id / inputs / modes / analysis / n_sources
-#   max_events / enable_ntuple / cleanup
-#   request_cpus / request_memory / request_disk
-#   processing_bundle_path / processing_bundle_name / proxy_bundle_path / proxy_bundle_name
+# 支持本地和远程 HTCondor 集群
+# 通过环境变量或 DAG VARS 控制路径
 # ==============================================================================
 
 Universe = vanilla
 
-Executable = /bin/bash
-transfer_executable = False
-Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(processing_bundle_name); cd runtime/processing; bash run_chain.sh --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events $(max_events) --enable-ntuple $(enable_ntuple) --cleanup $(cleanup)'"
+Executable = run_processing.sh
+transfer_executable = True
+arguments = "$(proxy_bundle_name) $(processing_bundle_name) $(inputs) $(modes) $(analysis) $(campaign) $(job_id) $(max_events) $(enable_ntuple) $(cleanup) $(LOCAL_OUTPUT_BASE)"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
@@ -21,19 +18,24 @@ Transfer_Input_Files = $(processing_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
-Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
+Output = proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error  = proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log    = proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
 
 request_cpus = $(request_cpus)
 request_memory = $(request_memory)
 request_disk = $(request_disk)
 
+requirements = (TARGET.Machine == "nd-16.hepthu.com")
+getenv = True
+initialdir = $(LOCAL_LOG_DIR)
+
+environment = "LOCAL_OUTPUT_BASE=$(LOCAL_OUTPUT_BASE) RAW_THREADS=1 RAW_STREAMS=1 RAW_WATCHDOG_TIMEOUT=7200s RAW_WATCHDOG_KILL_AFTER=300s RAW_CMSDRIVER_TIMEOUT=600s PREMIX_INPUT_MODE=$(PREMIX_INPUT_MODE) PREMIX_REDIRECTOR=$(PREMIX_REDIRECTOR) PREMIX_CACHE_FILES=$(PREMIX_CACHE_FILES) PREMIX_CACHE_TIMEOUT=7200s PREMIX_CACHE_RETRIES=3 PREMIX_CACHE_REDIRECTOR=$(PREMIX_CACHE_REDIRECTOR)"
+
 +MaxRuntime = 604800
 
-Environment = "HOME=/srv"
-
-+SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
+# No container - will run Singularity manually in run_chain.sh for CMSSW_12 steps
+# +SingularityImage = ""
 
 OnExitHold = (ExitCode != 0)
 OnExitHoldReason = "Processing chain failed"

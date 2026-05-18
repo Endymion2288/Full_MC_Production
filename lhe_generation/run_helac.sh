@@ -742,7 +742,26 @@ fi
 verify_lhe_octet_codes "${FINAL_LHE_FILE}"
 
 # Create remote directory and copy to T2_CN_Beijing storage via XRootD
-if [ "${SKIP_STAGEOUT:-0}" -eq 1 ]; then
+if [ -n "${LOCAL_OUTPUT_BASE:-}" ]; then
+    # Local stageout
+    echo "[INFO] Using local stageout to ${LOCAL_OUTPUT_BASE}"
+    LOCAL_DIR="${LOCAL_OUTPUT_BASE}/${OUTPUT_DIR}"
+    mkdir -p "${LOCAL_DIR}" || {
+        echo "[ERROR] Failed to create local directory: ${LOCAL_DIR}"
+        exit 1
+    }
+
+    LOCAL_OUTPUT="${LOCAL_DIR}/sample_${POOL_NAME}_${MY_SEED}.lhe"
+    echo "[INFO] Staging out LHE file to: ${LOCAL_OUTPUT}"
+
+    if cp "${FINAL_LHE_FILE}" "${LOCAL_OUTPUT}"; then
+        echo "[INFO] Local stageout successful"
+        echo "Output: ${LOCAL_OUTPUT}"
+    else
+        echo "[ERROR] Failed to stage out LHE file locally"
+        exit 1
+    fi
+elif [ "${SKIP_STAGEOUT:-0}" -eq 1 ]; then
     echo "[INFO] SKIP_STAGEOUT=1, skip XRootD stageout"
 else
     echo "Creating remote directory on T2_CN_Beijing..."

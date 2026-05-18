@@ -9,7 +9,7 @@ set -e
 
 # Configuration
 PROXY_SRC="/tmp/x509up_u$(id -u)"
-PROXY_DST="/afs/cern.ch/user/x/xcheng/x509up_u$(id -u)"
+PROXY_DST="/home/storage29/users/xingcheng/x509up_u$(id -u)"
 EOS_HOST="cceos.ihep.ac.cn"
 EOS_XRDFS_TARGET="root://${EOS_HOST}"
 EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v2"

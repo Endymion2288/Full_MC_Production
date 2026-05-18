@@ -1,17 +1,15 @@
 # ==============================================================================
-# lhe_gen.sub - LHE 生成节点 submit 模板
+# lhe_gen.sub - LHE 生成节点 submit 模板 (通用)
 # ==============================================================================
-# 由 dag_generator.py 通过 DAGMan VARS 注入以下变量：
-#   pool / seed / min_pt_* / unwevt / test_mode
-#   request_cpus / request_memory / request_disk
-#   lhe_bundle_path / lhe_bundle_name / proxy_bundle_path / proxy_bundle_name
+# 支持本地和远程 HTCondor 集群
+# 通过环境变量或 DAG VARS 控制路径
 # ==============================================================================
 
 Universe = vanilla
 
-Executable = /bin/bash
-transfer_executable = False
-Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(lhe_bundle_name); cd runtime/lhe_generation; bash run_helac.sh --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q) --unwevt $(unwevt) --test-mode $(test_mode)'"
+Executable = run_lhe_gen.sh
+transfer_executable = True
+arguments = "$(proxy_bundle_name) $(lhe_bundle_name) $(pool) $(seed) $(min_pt_conia) $(min_pt_bonia) $(min_pt_q) $(unwevt) $(test_mode) $(LOCAL_OUTPUT_BASE)"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
@@ -20,18 +18,23 @@ Transfer_Input_Files = $(lhe_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
-Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
+Output = lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
+Error  = lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
+Log    = lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
 
 request_cpus = $(request_cpus)
 request_memory = $(request_memory)
 request_disk = $(request_disk)
 
+requirements = (TARGET.Machine == "nd-16.hepthu.com")
+getenv = True
+initialdir = $(LOCAL_LOG_DIR)
+
+environment = "LOCAL_OUTPUT_BASE=$(LOCAL_OUTPUT_BASE)"
+
 +MaxRuntime = 604800
 
-Environment = "HOME=/srv"
-
+# 容器配置
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64"
 
 OnExitHold = (ExitCode != 0)

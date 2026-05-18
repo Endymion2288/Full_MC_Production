@@ -1,0 +1,43 @@
+# ==============================================================================
+# processing.sub - shower/mix/CMSSW 处理节点 submit 模板 (本地 HTCondor)
+# ==============================================================================
+# 本地版本适配:
+# - 使用本地 nd-29.hepthu.com HTCondor 集群
+# - 支持本地 apptainer 容器
+# - 支持本地输出目录
+# ==============================================================================
+
+Universe = vanilla
+
+Executable = /bin/bash
+transfer_executable = False
+Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); PROXY_TARGET=/tmp/x509up_u$(id -u); install -m 600 credentials/x509_user_proxy ${PROXY_TARGET}; rm -rf credentials; export X509_USER_PROXY=${PROXY_TARGET}; tar -xzf $(processing_bundle_name); cd runtime/processing; bash run_chain.sh --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events $(max_events) --enable-ntuple $(enable_ntuple) --cleanup $(cleanup)'"
+
+Should_Transfer_Files = YES
+WhenToTransferOutput = ON_EXIT
+
+Transfer_Input_Files = $(processing_bundle_path), $(proxy_bundle_path)
+
+transfer_output_files =
+
+Output = $(LOCAL_LOG_DIR)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error  = $(LOCAL_LOG_DIR)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log    = $(LOCAL_LOG_DIR)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
+
+request_cpus = $(request_cpus)
+request_memory = $(request_memory)
+request_disk = $(request_disk)
+
++MaxRuntime = 604800
+
+Environment = "HOME=/srv"
+
+# 本地支持 apptainer
++SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64"
+
+OnExitHold = (ExitCode != 0)
+OnExitHoldReason = "Processing chain failed"
+OnExitHoldSubCode = 1
+PeriodicRelease = (JobRunCount < 2) && (HoldReasonCode == 3)
+
+Queue 1

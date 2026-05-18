@@ -6,18 +6,20 @@ Universe = vanilla
 
 Executable = /bin/bash
 transfer_executable = False
-Arguments = "-lc 'set -euo pipefail; tar -xzf $(summary_bundle_name); cd runtime/processing/templates; bash summary.sh'"
+Arguments = "-lc 'set -euo pipefail; /usr/bin/tar -xzf $(summary_bundle_name); cd runtime/processing/templates; bash summary.sh'"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
 Transfer_Input_Files = $(summary_bundle_path)
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).stderr
-Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).log
+Output = $(LOCAL_LOG_DIR)/summary_$(Cluster)_$(Process).stdout
+Error  = $(LOCAL_LOG_DIR)/summary_$(Cluster)_$(Process).stderr
+Log    = $(LOCAL_LOG_DIR)/summary_$(Cluster)_$(Process).log
 
 request_cpus = 1
 request_memory = 1GB
 request_disk = 1GB
+
+requirements = (TARGET.Machine == "nd-16.hepthu.com")
 
 Queue 1

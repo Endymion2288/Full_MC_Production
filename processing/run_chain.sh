@@ -275,7 +275,12 @@ get_lhe_file() {
         else
             pool_subpath="lhe_pools/${pool_name}"
         fi
-        msg_error "No LHE files found in ${EOS_PATH_BASE}/${pool_subpath}" >&2
+
+        if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+            msg_error "No LHE files found in ${LOCAL_OUTPUT_BASE}/${pool_subpath}" >&2
+        else
+            msg_error "No LHE files found in ${EOS_PATH_BASE}/${pool_subpath}" >&2
+        fi
         return 1
     fi
 
@@ -294,22 +299,43 @@ list_lhe_files() {
         pool_subpath="lhe_pools/${pool_name}"
     fi
 
-    if ! file_list=$(run_xrdfs "${EOS_XRDFS_TARGET}" ls "${EOS_PATH_BASE}/${pool_subpath}" 2>/dev/null | grep '\.lhe$' | sort); then
-        msg_error "Failed to list LHE files via xrdfs at ${EOS_PATH_BASE}/${pool_subpath}" >&2
-        return 1
+    # Check if using local storage
+    if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+        local local_pool_dir="${LOCAL_OUTPUT_BASE}/${pool_subpath}"
+        if [[ ! -d "${local_pool_dir}" ]]; then
+            msg_error "Local LHE directory not found: ${local_pool_dir}" >&2
+            return 1
+        fi
+
+        if ! file_list=$(find "${local_pool_dir}" -name "*.lhe" -type f | sort); then
+            msg_error "Failed to list LHE files from ${local_pool_dir}" >&2
+            return 1
+        fi
+    else
+        # Use XRootD for remote storage
+        if ! file_list=$(run_xrdfs "${EOS_XRDFS_TARGET}" ls "${EOS_PATH_BASE}/${pool_subpath}" 2>/dev/null | grep '\.lhe$' | sort); then
+            msg_error "Failed to list LHE files via xrdfs at ${EOS_PATH_BASE}/${pool_subpath}" >&2
+            return 1
+        fi
     fi
 
     if [[ -z "${file_list}" ]]; then
         return 0
     fi
 
-    while IFS= read -r line; do
-        [[ -n "${line}" ]] || continue
-        printf 'root://%s/%s\n' "${EOS_HOST}" "${line}"
-    done <<< "${file_list}"
+    if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+        # Return local file paths
+        echo "${file_list}"
+    else
+        # Return XRootD URLs
+        while IFS= read -r line; do
+            [[ -n "${line}" ]] || continue
+            printf 'root://%s/%s\n' "${EOS_HOST}" "${line}"
+        done <<< "${file_list}"
+    fi
 }
 
-# Check if a remote XRootD file exists
+# Check if a remote XRootD file or local file exists
 check_remote_file() {
     local url="$1"
     if [[ "$url" == root://* ]]; then
@@ -339,6 +365,7 @@ ensure_cmssw12_project() {
     msg_info "Creating CMSSW_12_4_14 project from CVMFS..." >&2
     source /cvmfs/cms.cern.ch/cmsset_default.sh
     export SCRAM_ARCH=el8_amd64_gcc10
+export SITECONFIG_PATH=/cvmfs/cms.cern.ch/SITECONF/T2_CN_Beijing
     
     cd "${WORKDIR}"
     run_logged "scram_project_CMSSW_12_4_14" scramv1 project CMSSW CMSSW_12_4_14 >&2 || {
@@ -364,6 +391,14 @@ setup_cmssw12() {
     cd "${base_path}/src"
     eval $(scramv1 runtime -sh)
     cd - > /dev/null
+    
+    # Debug: Check if libssl.so.1.1 is available
+    if ldconfig -p | grep -q "libssl.so.1.1"; then
+        msg_info "libssl.so.1.1 found in system"
+    else
+        msg_warn "libssl.so.1.1 not found in system library cache"
+    fi
+    
     msg_ok "CMSSW environment: ${CMSSW_VERSION}"
 }
 
@@ -429,6 +464,93 @@ setup_cmssw15() {
 # EL9 container path for CMSSW_15
 EL9_CONTAINER="/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
 
+CMSSW12_CONTAINER="${CMSSW12_CONTAINER:-/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64}"
+
+container_runtime() {
+    if command -v apptainer >/dev/null 2>&1; then
+        echo apptainer
+        return 0
+    fi
+    if command -v singularity >/dev/null 2>&1; then
+        echo singularity
+        return 0
+    fi
+    msg_error "Neither apptainer nor singularity is available on this worker" >&2
+    return 1
+}
+
+host_needs_cmssw12_container() {
+    if [[ -r /etc/os-release ]] && grep -Eq '^VERSION_ID="9(\.[0-9]+)?"$' /etc/os-release; then
+        return 0
+    fi
+    if ! ldconfig -p 2>/dev/null | grep -q "libssl.so.1.1"; then
+        return 0
+    fi
+    return 1
+}
+
+run_in_cmssw12_container() {
+    local script_content="$1"
+    local tmp_script
+    local scratch_root
+    local siteconf_overlay
+    tmp_script=$(mktemp --suffix=_cmssw12_cmd.sh)
+    scratch_root=$(dirname "${WORKDIR}")
+    siteconf_overlay="${scratch_root}/cms_siteconf_overlay"
+    rm -rf "${siteconf_overlay}"
+    mkdir -p "${siteconf_overlay}"
+    cp -a /cvmfs/cms.cern.ch/SITECONF/T2_CN_Beijing "${siteconf_overlay}/"
+    ln -s T2_CN_Beijing "${siteconf_overlay}/local"
+    cat > "${tmp_script}" <<'SCRIPT_HEADER'
+#!/bin/bash
+set -e
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+export SCRAM_ARCH=el8_amd64_gcc10
+SCRIPT_HEADER
+
+    echo "${script_content}" >> "${tmp_script}"
+    chmod +x "${tmp_script}"
+
+    UNPACKED_IMAGE="${CMSSW12_CONTAINER}" \
+    X509_USER_PROXY="${X509_USER_PROXY:-}" \
+    HOME="${HOME}" \
+    /cvmfs/cms.cern.ch/common/cmssw-el8 \
+        -B "${scratch_root}" \
+        -B /tmp \
+        -B "${siteconf_overlay}:/cvmfs/cms.cern.ch/SITECONF" \
+        --command-to-run "/bin/bash ${tmp_script}"
+
+    local rc=$?
+    rm -f "${tmp_script}"
+    return ${rc}
+}
+
+quote_shell_words() {
+    local quoted=""
+    printf -v quoted '%q ' "$@"
+    printf '%s' "${quoted% }"
+}
+
+run_cmssw12_command() {
+    local label="$1"
+    shift
+
+    if host_needs_cmssw12_container; then
+        local cmd_text
+        cmd_text=$(quote_shell_words "$@")
+        msg_info "Running ${label} inside el8 container for CMSSW_12 compatibility..."
+        run_logged "${label}" run_in_cmssw12_container "
+cd '${CMSSW_12_BASE}/src'
+eval \$(scramv1 runtime -sh)
+cd - >/dev/null
+${cmd_text}
+"
+        return $?
+    fi
+
+    run_logged "${label}" "$@"
+}
+
 # Run command inside el9 container using apptainer
 run_in_el9_container() {
     local script_content="$1"
@@ -455,6 +577,111 @@ SCRIPT_HEADER
     local rc=$?
     rm -f "${tmp_script}"
     return ${rc}
+}
+
+prepare_premix_filelist() {
+    local source_list="$1"
+    local output_list="${WORKDIR}/premix_input_eoscms.txt"
+    local redirector="${PREMIX_REDIRECTOR:-root://eoscms.cern.ch}"
+
+    if [[ ! -f "${source_list}" ]]; then
+        msg_error "Premix source filelist not found: ${source_list}"
+        return 1
+    fi
+
+    msg_info "Preparing premix filelist via ${redirector}..." >&2
+    python3 - "${source_list}" "${output_list}" "${redirector}" <<'PYHELPER'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+output = Path(sys.argv[2])
+redirector = sys.argv[3].rstrip('/')
+converted = []
+for raw in source.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith('#'):
+        continue
+    if '/store/' in line:
+        store_path = '/store/' + line.split('/store/', 1)[1]
+        converted.append(f"{redirector}//{store_path.lstrip('/')}")
+    else:
+        converted.append(line)
+output.write_text('\n'.join(converted) + '\n')
+print(f"wrote {len(converted)} entries to {output}", file=sys.stderr)
+PYHELPER
+    echo "${output_list}"
+}
+
+
+prepare_cached_premix_filelist() {
+    local source_list="$1"
+    local output_list="${WORKDIR}/premix_input_localcache.txt"
+    local cache_dir="${WORKDIR}/premix_cache"
+    local redirector="${PREMIX_CACHE_REDIRECTOR:-${PREMIX_REDIRECTOR:-root://eoscms.cern.ch}}"
+    local n_files="${PREMIX_CACHE_FILES:-1}"
+    local timeout_seconds="${PREMIX_CACHE_TIMEOUT:-7200s}"
+    local retries="${PREMIX_CACHE_RETRIES:-3}"
+
+    if [[ ! -f "${source_list}" ]]; then
+        msg_error "Premix source filelist not found: ${source_list}"
+        return 1
+    fi
+
+    mkdir -p "${cache_dir}"
+    : > "${output_list}"
+
+    msg_info "Caching ${n_files} premix file(s) via ${redirector} before RAW..." >&2
+    python3 - "${source_list}" "${n_files}" "${redirector}" <<'PYHELPER' | while IFS= read -r remote_url; do
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+limit = int(sys.argv[2])
+redirector = sys.argv[3].rstrip('/')
+count = 0
+for raw in source.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith('#'):
+        continue
+    if '/store/' in line:
+        store_path = '/store/' + line.split('/store/', 1)[1]
+        print(f"{redirector}//{store_path.lstrip('/')}")
+    else:
+        print(line)
+    count += 1
+    if count >= limit:
+        break
+PYHELPER
+        local base_name
+        local local_file
+        local attempt
+        base_name=$(basename "${remote_url%%\?*}")
+        local_file="${cache_dir}/${base_name}"
+        attempt=1
+        while [[ ${attempt} -le ${retries} ]]; do
+            msg_info "xrdcp premix cache attempt ${attempt}/${retries}: ${base_name}" >&2
+            if run_logged "xrdcp_premix_cache_${base_name}_${attempt}" \
+                timeout --preserve-status --kill-after=120s "${timeout_seconds}" \
+                run_xrdcp --nopbar --force "${remote_url}" "${local_file}"; then
+                break
+            fi
+            rm -f "${local_file}"
+            attempt=$((attempt + 1))
+            sleep 10
+        done
+        if [[ ! -s "${local_file}" ]]; then
+            msg_error "Failed to cache premix file after ${retries} attempts: ${remote_url}" >&2
+            return 1
+        fi
+        printf 'file:%s\n' "${local_file}" >> "${output_list}"
+    done
+
+    if [[ ! -s "${output_list}" ]]; then
+        msg_error "No premix files cached into ${output_list}" >&2
+        return 1
+    fi
+    echo "${output_list}"
 }
 
 run_cmsrun_cmssw15() {
@@ -494,17 +721,21 @@ SCRIPT_EOF
 ensure_voms_proxy() {
     msg_info "Checking VOMS proxy for pileup access..."
 
-    # Prefer user-provided proxy if already set
+    if [[ -z "${X509_USER_PROXY:-}" ]] && [[ -f "/home/storage29/users/xingcheng/x509up_u623600017" ]]; then
+        export X509_USER_PROXY="/home/storage29/users/xingcheng/x509up_u623600017"
+        msg_info "Using persistent proxy path: ${X509_USER_PROXY}"
+    fi
+
     if [[ -z "${X509_USER_PROXY:-}" ]] && [[ -f "/tmp/x509up_u$(id -u)" ]]; then
         export X509_USER_PROXY="/tmp/x509up_u$(id -u)"
         msg_info "Using default proxy path: ${X509_USER_PROXY}"
     fi
 
     if command -v voms-proxy-info >/dev/null 2>&1; then
-        if voms-proxy-info --exists >/dev/null 2>&1; then
+        if [[ -n "${X509_USER_PROXY:-}" ]] && voms-proxy-info --file "${X509_USER_PROXY}" --exists >/dev/null 2>&1; then
             local tl
-            tl=$(voms-proxy-info --timeleft 2>/dev/null || true)
-            msg_ok "VOMS proxy valid (timeleft: ${tl}s)"
+            tl=$(voms-proxy-info --file "${X509_USER_PROXY}" --timeleft 2>/dev/null || true)
+            msg_ok "VOMS proxy valid at ${X509_USER_PROXY} (timeleft: ${tl}s)"
             return 0
         fi
     else
@@ -764,11 +995,7 @@ run_gensim() {
     setup_cmssw12
     
     msg_info "Running HepMC -> GEN-SIM..."
-    run_logged "cmsRun_hepmc_to_GENSIM" cmsRun "${CMSSW_CONFIGS_DIR}/hepmc_to_GENSIM.py" \
-        inputFiles="file:${MIXED_HEPMC}" \
-        outputFile="file:${GENSIM_OUTPUT}" \
-        maxEvents=${MAX_EVENTS} \
-        nThreads=4
+    run_cmssw12_command "cmsRun_hepmc_to_GENSIM"         cmsRun "${CMSSW_CONFIGS_DIR}/hepmc_to_GENSIM.py"         inputFiles="file:${MIXED_HEPMC}"         outputFile="file:${GENSIM_OUTPUT}"         maxEvents=${MAX_EVENTS}         nThreads=4
     
     if [[ ! -f "${GENSIM_OUTPUT}" ]]; then
         msg_error "GEN-SIM failed: ${GENSIM_OUTPUT} not created"
@@ -787,9 +1014,38 @@ run_raw() {
     setup_cmssw12
     
     local cfg_file=$(mktemp --suffix=_raw_cfg.py)
+    local raw_threads="${RAW_THREADS:-1}"
+    local raw_streams="${RAW_STREAMS:-1}"
+    local raw_watchdog_timeout="${RAW_WATCHDOG_TIMEOUT:-7200s}"
+    local raw_watchdog_kill_after="${RAW_WATCHDOG_KILL_AFTER:-300s}"
     
-    msg_info "Generating RAW config..."
-    run_logged "cmsDriver_step2_raw" cmsDriver.py step2 \
+    local premix_mode="${PREMIX_INPUT_MODE:-eoscms}"
+    local premix_input=""
+    case "${premix_mode}" in
+        dbs)
+            premix_input="dbs:/Neutrino_E-10_gun/Run3Summer21PrePremix-Summer22_124X_mcRun3_2022_realistic_v11-v2/PREMIX"
+            ;;
+        eoscms|filelist)
+            local premix_filelist="/cvmfs/cms.cern.ch/offcomp-prod/premixPUlist/PREMIX-Run3Summer22DRPremix.txt"
+            local premix_runtime_filelist
+            premix_runtime_filelist=$(prepare_premix_filelist "${premix_filelist}") || return 1
+            premix_input="filelist:${premix_runtime_filelist}"
+            ;;
+        localcache)
+            local premix_filelist="/cvmfs/cms.cern.ch/offcomp-prod/premixPUlist/PREMIX-Run3Summer22DRPremix.txt"
+            local premix_runtime_filelist
+            premix_runtime_filelist=$(prepare_cached_premix_filelist "${premix_filelist}") || return 1
+            premix_input="filelist:${premix_runtime_filelist}"
+            ;;
+        *)
+            msg_error "Unknown PREMIX_INPUT_MODE=${premix_mode}; expected eoscms, localcache or dbs"
+            return 1
+            ;;
+    esac
+
+    local raw_cmsdriver_timeout="${RAW_CMSDRIVER_TIMEOUT:-600s}"
+    msg_info "Generating RAW config with PREMIX_INPUT_MODE=${premix_mode}..."
+    run_logged "cmsDriver_step2_raw"         timeout --preserve-status --kill-after=60s "${raw_cmsdriver_timeout}"         cmsDriver.py step2 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
         --eventcontent PREMIXRAW \
@@ -803,13 +1059,14 @@ run_raw() {
         --geometry DB:Extended \
         -n "${MAX_EVENTS}" \
         --customise Configuration/DataProcessing/Utils.addMonitoring \
-        --nThreads 4 --nStreams 4 \
-        --pileup_input "filelist:/cvmfs/cms.cern.ch/offcomp-prod/premixPUlist/PREMIX-Run3Summer22DRPremix.txt" \
+        --nThreads "${raw_threads}" --nStreams "${raw_streams}" \
+        --pileup_input "${premix_input}" \
         --filein "file:${GENSIM_OUTPUT}" \
         --fileout "file:${RAW_OUTPUT}"
     
-    msg_info "Running RAW step..."
-    run_logged "cmsRun_step2_raw" cmsRun "${cfg_file}"
+    msg_info "Running RAW step with nThreads=${raw_threads}, nStreams=${raw_streams}, watchdog=${raw_watchdog_timeout}..."
+
+    run_cmssw12_command "cmsRun_step2_raw"         timeout --preserve-status --kill-after="${raw_watchdog_kill_after}" "${raw_watchdog_timeout}"         cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${RAW_OUTPUT}" ]]; then
@@ -849,7 +1106,8 @@ run_reco() {
         --fileout "file:${RECO_OUTPUT}"
     
     msg_info "Running RECO step..."
-    run_logged "cmsRun_step3_reco" cmsRun "${cfg_file}"
+
+    run_cmssw12_command "cmsRun_step3_reco" cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${RECO_OUTPUT}" ]]; then
@@ -887,7 +1145,8 @@ run_miniaod() {
         --fileout "file:${MINIAOD_OUTPUT}"
     
     msg_info "Running MiniAOD step..."
-    run_logged "cmsRun_step4_miniaod" cmsRun "${cfg_file}"
+
+    run_cmssw12_command "cmsRun_step4_miniaod" cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${MINIAOD_OUTPUT}" ]]; then
@@ -951,25 +1210,54 @@ run_ntuple() {
 
 # Step 8: Transfer output
 transfer_output() {
-    msg_step "Step 8: Transfer to T2_CN_Beijing Storage"
-    
     local output_subpath="output/${CAMPAIGN_NAME}/${JOB_ID}"
-    
-    # Create remote directory
+
+    if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+        msg_step "Step 8: Copy outputs to local storage"
+        local local_output_dir="${LOCAL_OUTPUT_BASE}/${output_subpath}"
+        mkdir -p "${local_output_dir}" || return 1
+
+        if [[ -f "${MINIAOD_OUTPUT}" ]]; then
+            local miniaod_basename
+            miniaod_basename=$(basename "${MINIAOD_OUTPUT}")
+            run_logged "copy_local_miniaod_${JOB_ID}" cp -f "${MINIAOD_OUTPUT}" "${local_output_dir}/${miniaod_basename}" || return 1
+        fi
+
+        if [[ -f "${NTUPLE_OUTPUT:-}" ]]; then
+            local ntuple_basename
+            ntuple_basename=$(basename "${NTUPLE_OUTPUT}")
+            run_logged "copy_local_ntuple_${JOB_ID}" cp -f "${NTUPLE_OUTPUT}" "${local_output_dir}/${ntuple_basename}" || return 1
+        fi
+
+        if [[ "${CLEANUP}" == "true" ]]; then
+            msg_info "Cleaning up intermediate files..."
+            rm -f "${WORKDIR}"/*.hepmc
+            rm -f "${WORKDIR}"/output_GENSIM.root
+            rm -f "${WORKDIR}"/output_RAW.root
+            rm -f "${WORKDIR}"/output_RECO.root
+            msg_ok "Cleanup complete"
+        fi
+
+        msg_ok "Local copy complete: ${local_output_dir}/"
+        return 0
+    fi
+
+    msg_step "Step 8: Transfer to T2_CN_Beijing Storage"
+
     make_remote_dir "${output_subpath}" || return 1
-    
-    # Copy final outputs via XRootD
+
     if [[ -f "${MINIAOD_OUTPUT}" ]]; then
-        local miniaod_basename=$(basename "${MINIAOD_OUTPUT}")
+        local miniaod_basename
+        miniaod_basename=$(basename "${MINIAOD_OUTPUT}")
         stage_out "${MINIAOD_OUTPUT}" "${output_subpath}/${miniaod_basename}" || return 1
     fi
-    
-    if [[ -f "${NTUPLE_OUTPUT}" ]]; then
-        local ntuple_basename=$(basename "${NTUPLE_OUTPUT}")
+
+    if [[ -f "${NTUPLE_OUTPUT:-}" ]]; then
+        local ntuple_basename
+        ntuple_basename=$(basename "${NTUPLE_OUTPUT}")
         stage_out "${NTUPLE_OUTPUT}" "${output_subpath}/${ntuple_basename}" || return 1
     fi
-    
-    # Cleanup intermediate files
+
     if [[ "${CLEANUP}" == "true" ]]; then
         msg_info "Cleaning up intermediate files..."
         rm -f "${WORKDIR}"/*.hepmc
@@ -978,7 +1266,7 @@ transfer_output() {
         rm -f "${WORKDIR}"/output_RECO.root
         msg_ok "Cleanup complete"
     fi
-    
+
     msg_ok "Transfer complete: ${EOS_BASE}/${output_subpath}/"
 }
 
@@ -1116,7 +1404,7 @@ fi
 
 # Default workdir inside the worker scratch to avoid writing to AFS
 if [[ -z "${WORKDIR}" ]]; then
-    WORKDIR="/srv/${CAMPAIGN_NAME}_${JOB_ID}"
+    WORKDIR="${_CONDOR_SCRATCH_DIR:-$PWD}/${CAMPAIGN_NAME}_${JOB_ID}"
 fi
 export HOME="${WORKDIR}"
 
@@ -1291,5 +1579,9 @@ fi
 msg_step "Production Complete!"
 echo "Campaign:  ${CAMPAIGN_NAME}"
 echo "Job ID:    ${JOB_ID}"
-echo "Output:    ${EOS_OUTPUT}/${CAMPAIGN_NAME}/${JOB_ID}/"
+if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+    echo "Output:    ${LOCAL_OUTPUT_BASE}/output/${CAMPAIGN_NAME}/${JOB_ID}/"
+else
+    echo "Output:    ${EOS_OUTPUT}/${CAMPAIGN_NAME}/${JOB_ID}/"
+fi
 echo ""

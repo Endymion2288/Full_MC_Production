@@ -1,0 +1,43 @@
+# ==============================================================================
+# lhe_gen.sub - LHE 生成节点 submit 模板 (本地 HTCondor)
+# ==============================================================================
+# 本地版本适配:
+# - 使用本地 nd-29.hepthu.com HTCondor 集群
+# - 支持本地 apptainer 容器
+# - 支持本地输出目录
+# ==============================================================================
+
+Universe = vanilla
+
+Executable = /bin/bash
+transfer_executable = False
+Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); PROXY_TARGET=/tmp/x509up_u$(id -u); install -m 600 credentials/x509_user_proxy ${PROXY_TARGET}; rm -rf credentials; export X509_USER_PROXY=${PROXY_TARGET}; tar -xzf $(lhe_bundle_name); cd runtime/lhe_generation; bash run_helac.sh --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q) --unwevt $(unwevt) --test-mode $(test_mode)'"
+
+Should_Transfer_Files = YES
+WhenToTransferOutput = ON_EXIT
+
+Transfer_Input_Files = $(lhe_bundle_path), $(proxy_bundle_path)
+
+transfer_output_files =
+
+Output = $(LOCAL_LOG_DIR)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
+Error  = $(LOCAL_LOG_DIR)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
+Log    = $(LOCAL_LOG_DIR)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
+
+request_cpus = $(request_cpus)
+request_memory = $(request_memory)
+request_disk = $(request_disk)
+
++MaxRuntime = 604800
+
+Environment = "HOME=/srv"
+
+# 本地支持 apptainer
++SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64"
+
+OnExitHold = (ExitCode != 0)
+OnExitHoldReason = "LHE generation failed"
+OnExitHoldSubCode = 1
+PeriodicRelease = (JobRunCount < 2) && (HoldReasonCode == 3)
+
+Queue 1
