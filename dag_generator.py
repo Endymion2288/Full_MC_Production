@@ -238,12 +238,12 @@ LHE_POOLS: "OrderedDict[str, LHEPool]" = OrderedDict(
             "pool_jpsi_CSCO_g",
             LHEPool(
                 name="pool_jpsi_CSCO_g",
-                description="gg -> J/psi(CS+CO) + g",
+                description="pp -> J/psi + X with CrystalBall pT model",
                 process_lines=(
-                    "define jpsi_all = cc~(3S11) cc~(3S18) cc~(1S08) cc~(3PJ8)",
-                    "generate g g > jpsi_all g",
+                    "addon/pp_psiX_CrystalBall",
+                    "state.inp = 1  # J/psi",
                 ),
-                notes="workbook_v2 的 J/psi CS+CO 基础池。",
+                notes="J/psi 基础池使用 HELAC-Onia addon/pp_psiX_CrystalBall，CrystalBall 参数取 addon input 默认。",
                 seed_offset=0,
             ),
         ),
@@ -251,12 +251,12 @@ LHE_POOLS: "OrderedDict[str, LHEPool]" = OrderedDict(
             "pool_upsilon_CSCO_g",
             LHEPool(
                 name="pool_upsilon_CSCO_g",
-                description="gg -> Upsilon(CS+CO) + g",
+                description="pp -> Upsilon(1S) + X with CrystalBall pT model",
                 process_lines=(
-                    "define upsilon_all = bb~(3S11) bb~(3S18) bb~(1S08) bb~(3PJ8)",
-                    "generate g g > upsilon_all g",
+                    "addon/pp_psiX_CrystalBall",
+                    "state.inp = 3  # Upsilon(1S)",
                 ),
-                notes="workbook_v2 的 Upsilon CS+CO 基础池。",
+                notes="Upsilon 基础池使用 HELAC-Onia addon/pp_psiX_CrystalBall，CrystalBall 参数取 addon input 默认。",
                 seed_offset=20000,
             ),
         ),

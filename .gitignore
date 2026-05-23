@@ -21,6 +21,7 @@ xcheng.cc
 test_output/
 .claude/
 generated/
+tests/generated/
 output*/
 log_full/
 checks/
