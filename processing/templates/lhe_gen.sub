@@ -23,7 +23,7 @@ transfer_output_files =
 
 Output = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
 Error  = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
-Log    = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
+Log    = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster).log
 
 request_cpus = $(request_cpus)
 request_memory = $(request_memory)

@@ -18,11 +18,19 @@ OCTET_PDG_TOOL="${BASE_DIR}/common/octet_pdg.py"
 POOL_NAME=""
 MY_SEED=100
 PROCESS_STRING=""
+CHARM_STATE=""
+BOTTOM_STATE=""
+EXTRA_GLUON="false"
+JOB_SLUG=""
+STAGEOUT_MODE="lhe"
+PARTON_SHOWER_LINE=""
 MIN_PT_CONIA=6.0
 MIN_PT_BONIA=4.0
 MIN_PT_Q=0.0
 WORKDIR=$(pwd)
 OUTPUT_DIR=""
+CMASS="1.54845"
+BMASS="4.73020"
 # workbook_v2 / 用户补充要求：
 # 1. 优先使用 gener = 0 (PHEGAS)
 # 2. gener = 0 时推荐 nopt = nmc/10, nopt_step = nmc/10, noptlim = nmc
@@ -64,6 +72,41 @@ msg_error() { echo "[ERROR] $1" >&2; }
 sanitize_log_label() {
     local raw_label="$1"
     printf '%s' "${raw_label}" | sed 's/[^A-Za-z0-9._-]/_/g'
+}
+
+bool_is_true() {
+    case "${1,,}" in
+        1|true|yes|y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+state_is_octet() {
+    local state="${1^^}"
+    [[ "${state}" == *8 ]]
+}
+
+validate_fock_state() {
+    case "${1^^}" in
+        3S11|3P01|3P11|3P21|3S18|1S08|3P08|3P18|3P28)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+build_helac_matrix_process() {
+    local charm_state="$1"
+    local bottom_state="$2"
+    local extra_gluon="$3"
+    local process="generate g g > cc~(${charm_state}) bb~(${bottom_state})"
+
+    if bool_is_true "${extra_gluon}"; then
+        process="${process} g"
+    fi
+    printf '%s\n' "${process}"
 }
 
 ensure_job_log_dir() {
@@ -123,11 +166,79 @@ run_logged_bash() {
 
 make_remote_dir() {
     local remote_subpath="$1"
-    xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${remote_subpath}" >/dev/null 2>&1 || {
-        msg_warn "远端目录创建失败或已存在: ${EOS_PATH_BASE}/${remote_subpath}"
+    local target=""
+    local host=""
+    local path=""
+    local url=""
+
+    target=$(resolve_remote_target "${remote_subpath}") || return 1
+    IFS=$'\t' read -r host path url <<< "${target}"
+
+    xrdfs "${host}" mkdir -p "${path}" >/dev/null 2>&1 || {
+        msg_warn "远端目录创建失败或已存在: ${path} (${host})"
         return 1
     }
     return 0
+}
+
+normalize_remote_path() {
+    local path="$1"
+    while [[ "${path}" == //* ]]; do
+        path="${path#/}"
+    done
+    [[ "${path}" == /* ]] || path="/${path}"
+    printf '%s\n' "${path}"
+}
+
+join_remote_spec() {
+    local base="$1"
+    local child="$2"
+    base="${base%/}"
+    child="${child#/}"
+    if [[ -z "${base}" ]]; then
+        printf '%s\n' "${child}"
+    elif [[ -z "${child}" ]]; then
+        printf '%s\n' "${base}"
+    else
+        printf '%s/%s\n' "${base}" "${child}"
+    fi
+}
+
+resolve_remote_target() {
+    local spec="$1"
+    local rest=""
+    local host=""
+    local path=""
+    local url=""
+
+    if [[ "${spec}" == root://* ]]; then
+        rest="${spec#root://}"
+        host="root://${rest%%/*}"
+        path=$(normalize_remote_path "/${rest#*/}")
+    elif [[ "${spec}" == /eos/* ]]; then
+        host="root://eosuser.cern.ch"
+        path="${spec}"
+    elif [[ "${spec}" == /store/* ]]; then
+        host="root://${EOS_HOST}"
+        path="${spec}"
+    else
+        host="${EOS_XRDFS_TARGET}"
+        path=$(normalize_remote_path "${EOS_PATH_BASE}/${spec}")
+    fi
+
+    url="root://${host#root://}/${path}"
+    printf '%s\t%s\t%s\n' "${host}" "${path}" "${url}"
+}
+
+remote_url_for_spec() {
+    local target=""
+    local host=""
+    local path=""
+    local url=""
+
+    target=$(resolve_remote_target "$1") || return 1
+    IFS=$'\t' read -r host path url <<< "${target}"
+    printf '%s\n' "${url}"
 }
 
 stage_out_worker_logs() {
@@ -143,7 +254,7 @@ stage_out_worker_logs() {
 
     ensure_job_log_dir
 
-    local remote_log_dir="${OUTPUT_DIR}/logs"
+    local remote_log_dir=""
     local bundle_name="logs_${POOL_NAME}_${MY_SEED}.tar.gz"
     local bundle_path="${WORKDIR}/${bundle_name}"
     local manifest_path="${WORKDIR}/log_manifest_${POOL_NAME}_${MY_SEED}.txt"
@@ -180,13 +291,132 @@ stage_out_worker_logs() {
         return 0
     fi
 
+    remote_log_dir=$(join_remote_spec "${OUTPUT_DIR}" "logs")
     make_remote_dir "${remote_log_dir}" || true
-    local remote_url="root://${EOS_HOST}/${EOS_PATH_BASE}/${remote_log_dir}/${bundle_name}"
+    local remote_url
+    remote_url=$(remote_url_for_spec "$(join_remote_spec "${remote_log_dir}" "${bundle_name}")")
     msg_info "上传完整日志到: ${remote_url}"
     if xrdcp --nopbar --force "${bundle_path}" "${remote_url}" >/dev/null 2>&1; then
         msg_info "完整日志已上传: ${remote_url}"
     else
         msg_warn "完整日志上传失败: ${remote_url}"
+    fi
+}
+
+find_helac_calc_output_dir() {
+    local run_dir="$1"
+    local output_dir=""
+
+    if [[ -n "${run_dir}" && -d "${run_dir}/P0_calc_0/output" ]]; then
+        printf '%s\n' "${run_dir}/P0_calc_0/output"
+        return 0
+    fi
+
+    output_dir=$(find . -path "./PROC_HO_*/P0_*/output" -type d 2>/dev/null | sort | tail -1)
+    if [[ -n "${output_dir}" && -d "${output_dir}" ]]; then
+        printf '%s\n' "${output_dir}"
+        return 0
+    fi
+
+    return 1
+}
+
+find_helac_run_dir() {
+    local log_path="$1"
+    local run_dir=""
+
+    if [[ -f "${log_path}" ]]; then
+        run_dir=$(grep "INFO: Results are collected in" "${log_path}" | \
+                  sed -r -e "s,^.*(PROC_HO_[0-9]+)\/.*$,\1,g" | head -1)
+        if [[ -n "${run_dir}" && -d "${run_dir}" ]]; then
+            printf '%s\n' "${run_dir}"
+            return 0
+        fi
+    fi
+
+    run_dir=$(find . -maxdepth 1 -type d -name "PROC_HO_*" | sort | tail -1)
+    if [[ -n "${run_dir}" && -d "${run_dir}" ]]; then
+        printf '%s\n' "${run_dir#./}"
+        return 0
+    fi
+
+    return 1
+}
+
+stage_out_helac_output_archive() {
+    local run_dir="$1"
+    local calc_output_dir=""
+    local safe_slug=""
+    local archive_name=""
+    local archive_path=""
+    local remote_dir=""
+    local remote_url=""
+
+    if [[ "${SKIP_STAGEOUT:-0}" -eq 1 ]]; then
+        echo "[INFO] SKIP_STAGEOUT=1, skip HELAC output archive stageout"
+        return 0
+    fi
+
+    if ! calc_output_dir=$(find_helac_calc_output_dir "${run_dir}"); then
+        echo "[ERROR] Could not find HELAC calc output directory under ${run_dir:-PROC_HO_*}"
+        return 1
+    fi
+
+    safe_slug=$(sanitize_log_label "${JOB_SLUG:-${POOL_NAME}_${MY_SEED}}")
+    archive_name="helac_output_${safe_slug}_${MY_SEED}.tar.gz"
+    archive_path="${WORKDIR}/${archive_name}"
+
+    echo "[INFO] Archiving HELAC output directory: ${calc_output_dir}"
+    run_logged "tar_helac_output" tar -C "$(dirname "${calc_output_dir}")" -czf "${archive_path}" "$(basename "${calc_output_dir}")"
+
+    remote_dir=$(join_remote_spec "${OUTPUT_DIR}" "${safe_slug}")
+    make_remote_dir "${remote_dir}" || true
+    remote_url=$(remote_url_for_spec "$(join_remote_spec "${remote_dir}" "${archive_name}")")
+    echo "[INFO] Staging out HELAC output archive to: ${remote_url}"
+    run_logged "xrdcp_helac_output_stageout" xrdcp --nopbar --force "${archive_path}" "${remote_url}" || {
+        echo "Error: Failed to stage out HELAC output archive"
+        return 1
+    }
+
+    echo "[INFO] HELAC output archive complete: ${remote_url}"
+}
+
+stage_out_forbidden_marker() {
+    local marker_name=""
+    local marker_path=""
+    local remote_dir=""
+    local remote_url=""
+    local safe_slug=""
+
+    safe_slug=$(sanitize_log_label "${JOB_SLUG:-${POOL_NAME}_${MY_SEED}}")
+    marker_name="helac_forbidden_${safe_slug}_${MY_SEED}.txt"
+    marker_path="${WORKDIR}/${marker_name}"
+
+    cat > "${marker_path}" << EOF
+status: forbidden
+reason: HELAC-Onia reported no nonvanishing subprocesses
+pool: ${POOL_NAME}
+process: ${PROCESS_STRING}
+charm_state: ${CHARM_STATE}
+bottom_state: ${BOTTOM_STATE}
+extra_gluon: ${EXTRA_GLUON}
+job_slug: ${JOB_SLUG}
+seed: ${MY_SEED}
+EOF
+
+    if [[ "${SKIP_STAGEOUT:-0}" -eq 1 ]]; then
+        echo "[INFO] SKIP_STAGEOUT=1, skip forbidden-channel marker upload"
+        return 0
+    fi
+
+    remote_dir=$(join_remote_spec "${OUTPUT_DIR}" "forbidden")
+    make_remote_dir "${remote_dir}" || true
+    remote_url=$(remote_url_for_spec "$(join_remote_spec "${remote_dir}" "${marker_name}")")
+    echo "[INFO] Staging out forbidden-channel marker to: ${remote_url}"
+    if xrdcp --nopbar --force "${marker_path}" "${remote_url}" >/dev/null 2>&1; then
+        echo "[INFO] Forbidden-channel marker uploaded: ${remote_url}"
+    else
+        echo "[WARN] Failed to upload forbidden-channel marker: ${remote_url}"
     fi
 }
 
@@ -332,6 +562,12 @@ EOF
 443 553
 EOF
             ;;
+        "helac_matrix")
+            cat > "${output_file}" << 'EOF'
+2
+443 553
+EOF
+            ;;
         "pool_gg")
             cat > "${output_file}" << 'EOF'
 0
@@ -423,6 +659,8 @@ prepare_runtime_user_inp() {
     # worker 上显式重写 Monte Carlo 相关参数，避免旧模板把 run_config.ho 中的
     # 积分设置重新覆盖掉。
     sed -i -E \
+        -e "s|^(cmass)[[:space:]].*$|\\1 ${CMASS}d0|" \
+        -e "s|^(bmass)[[:space:]].*$|\\1 ${BMASS}d0|" \
         -e "s|^(minptq)[[:space:]].*$|\\1 ${MIN_PT_Q}d0|" \
         -e "s|^(minptconia)[[:space:]].*$|\\1 ${MIN_PT_CONIA}d0|" \
         -e "s|^(minptbonia)[[:space:]].*$|\\1 ${MIN_PT_BONIA}d0|" \
@@ -437,7 +675,7 @@ prepare_runtime_user_inp() {
         "${runtime_user_inp}"
 
     echo "[INFO] 运行时 user.inp 中的关键积分参数:"
-    grep -E '^(minptq|minptconia|minptbonia|preunw|unwevt|nmc|nopt|nopt_step|noptlim|gener|ranhel)[[:space:]]' "${runtime_user_inp}"
+    grep -E '^(cmass|bmass|minptq|minptconia|minptbonia|preunw|unwevt|nmc|nopt|nopt_step|noptlim|gener|ranhel)[[:space:]]' "${runtime_user_inp}"
 }
 
 # Parse command line arguments
@@ -453,6 +691,26 @@ while [[ $# -gt 0 ]]; do
             ;;
         --process)
             PROCESS_STRING="$2"
+            shift 2
+            ;;
+        --charm-state)
+            CHARM_STATE="${2^^}"
+            shift 2
+            ;;
+        --bottom-state)
+            BOTTOM_STATE="${2^^}"
+            shift 2
+            ;;
+        --extra-gluon)
+            EXTRA_GLUON="$2"
+            shift 2
+            ;;
+        --job-slug)
+            JOB_SLUG="$2"
+            shift 2
+            ;;
+        --stageout-mode)
+            STAGEOUT_MODE="$2"
             shift 2
             ;;
         --min-pt-conia)
@@ -490,6 +748,38 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ -n "${CHARM_STATE}" || -n "${BOTTOM_STATE}" ]]; then
+    if [[ -z "${CHARM_STATE}" || -z "${BOTTOM_STATE}" ]]; then
+        echo "Error: --charm-state and --bottom-state must be provided together"
+        exit 1
+    fi
+    if ! validate_fock_state "${CHARM_STATE}"; then
+        echo "Error: Unsupported charm Fock state: ${CHARM_STATE}"
+        exit 1
+    fi
+    if ! validate_fock_state "${BOTTOM_STATE}"; then
+        echo "Error: Unsupported bottom Fock state: ${BOTTOM_STATE}"
+        exit 1
+    fi
+
+    POOL_NAME="${POOL_NAME:-helac_matrix}"
+    PROCESS_STRING=$(build_helac_matrix_process "${CHARM_STATE}" "${BOTTOM_STATE}" "${EXTRA_GLUON}")
+    PARTON_SHOWER_LINE="set parton_shower = 1"
+    if [[ -z "${JOB_SLUG}" ]]; then
+        if bool_is_true "${EXTRA_GLUON}"; then
+            JOB_SLUG="c${CHARM_STATE}_b${BOTTOM_STATE}_g"
+        else
+            JOB_SLUG="c${CHARM_STATE}_b${BOTTOM_STATE}_born"
+        fi
+    fi
+    if state_is_octet "${CHARM_STATE}"; then
+        CMASS="1.64845"
+    fi
+    if state_is_octet "${BOTTOM_STATE}"; then
+        BMASS="4.83020"
+    fi
+fi
 
 # Validate required arguments
 if [ -z "$POOL_NAME" ]; then
@@ -598,7 +888,15 @@ echo "HELAC-Onia LHE Generation"
 echo "=============================================="
 echo "Pool:           $POOL_NAME"
 echo "Process:        $PROCESS_STRING"
+if [[ -n "${CHARM_STATE}" ]]; then
+    echo "Charm state:    ${CHARM_STATE}"
+    echo "Bottom state:   ${BOTTOM_STATE}"
+    echo "Extra gluon:    ${EXTRA_GLUON}"
+    echo "Job slug:       ${JOB_SLUG}"
+fi
 echo "Seed:           $MY_SEED"
+echo "Charm mass:     ${CMASS} GeV"
+echo "Bottom mass:    ${BMASS} GeV"
 echo "Min pT (conia): $MIN_PT_CONIA GeV"
 echo "Min pT (bonia): $MIN_PT_BONIA GeV"
 echo "Min pT (q):     $MIN_PT_Q GeV"
@@ -659,8 +957,8 @@ cd HELAC-Onia-2.7.6
 # LDME values from:
 # - workbook_v2.md 中给出的 Helac-Onia 格式换算值
 cat > run_config.ho << EOF
-set cmass = 1.54845d0
-set bmass = 4.73020d0
+set cmass = ${CMASS}d0
+set bmass = ${BMASS}d0
 set LDMEcc1S08 = 0.0023125d0
 set LDMEcc3S18 = 0.0003528845833333333d0
 set LDMEcc3P08 = 0.0040024d0
@@ -686,6 +984,7 @@ set minptbonia = ${MIN_PT_BONIA}d0
 set maxrapconia = 2.4
 set minptq = ${MIN_PT_Q}
 set ranhel = 4
+${PARTON_SHOWER_LINE}
 ${PROCESS_STRING}
 launch
 exit
@@ -694,19 +993,36 @@ EOF
 # 强制同步 runtime user.inp，避免静态模板中的旧积分参数覆盖掉当前作业设置。
 prepare_runtime_user_inp "$(pwd)"
 
+PY8_ONIA_KIND="${POOL_NAME}"
+if [[ "${POOL_NAME}" == "helac_matrix" || "${STAGEOUT_MODE}" == "helac-output" ]]; then
+    PY8_ONIA_KIND="helac_matrix"
+fi
+PY8_ONIA_CONFIG="${WORKDIR}/py8_onia_user.inp"
+if write_py8_onia_config "${PY8_ONIA_KIND}" "input/py8_onia_user.inp"; then
+    cp "input/py8_onia_user.inp" "${PY8_ONIA_CONFIG}"
+    echo "[INFO] HELAC input/py8_onia_user.inp:"
+    cat "input/py8_onia_user.inp"
+else
+    echo "[WARN] No py8_onia_user.inp rule for ${PY8_ONIA_KIND}; converter fallback may use raw LHE"
+fi
+
 msg_info "Running HELAC-Onia..."
 run_logged_bash "helac_ho_cluster" "cd '$(pwd)' && ./ho_cluster < run_config.ho"
 HELAC_RUN_LOG="${LAST_STDOUT_LOG}"
 cp "${HELAC_RUN_LOG}" ../helac_run.log
 
-# Find output LHE file
-RUN_DIR=$(grep "INFO: Results are collected in" "${HELAC_RUN_LOG}" | \
-          sed -r -e "s,^.*(PROC_HO_[0-9]+)\/.*$,\1,g" | head -1)
+if grep -q "No nonvanishing subprocesses are found" "${HELAC_RUN_LOG}"; then
+    echo "[INFO] HELAC-Onia found no nonvanishing subprocesses; treating this channel as QCD-forbidden."
+    stage_out_forbidden_marker
+    exit 0
+fi
 
-if [ -z "$RUN_DIR" ]; then
-    echo "Error: Could not find run directory in log"
+# Find output LHE file
+if ! RUN_DIR=$(find_helac_run_dir "${HELAC_RUN_LOG}"); then
+    echo "Error: Could not find HELAC run directory"
     exit 1
 fi
+echo "[INFO] HELAC run directory: ${RUN_DIR}"
 
 # Find the LHE file from the latest run directory
 if [[ -n "${RUN_DIR}" ]] && [[ -d "${RUN_DIR}/results" ]]; then
@@ -737,10 +1053,9 @@ fi
 
 # workbook_v2 要求在 LHE 生成后单独调用 converter 完成 PDG 转换。
 FINAL_LHE_FILE="${LHE_FILE}"
-PY8_ONIA_CONFIG="${WORKDIR}/py8_onia_user.inp"
 CONVERTED_LHE_FILE="${WORKDIR}/sample_${POOL_NAME}_${MY_SEED}_converted.lhe"
 
-if write_py8_onia_config "${POOL_NAME}" "${PY8_ONIA_CONFIG}" && build_lhe_converter_if_needed; then
+if [[ -f "${PY8_ONIA_CONFIG}" ]] && build_lhe_converter_if_needed; then
     echo "[INFO] Running lhe_pythia6_pythia8 converter..."
     if run_logged "lhe_pythia6_pythia8" "${WORKDIR}/lhe_pythia6_pythia8" "${LHE_FILE}" "${PY8_ONIA_CONFIG}" "${CONVERTED_LHE_FILE}"; then
         if [[ -f "${CONVERTED_LHE_FILE}" ]]; then
@@ -777,16 +1092,19 @@ fi
 
 verify_lhe_octet_codes "${FINAL_LHE_FILE}"
 
-# Create remote directory and copy to T2_CN_Beijing storage via XRootD
-if [ "${SKIP_STAGEOUT:-0}" -eq 1 ]; then
+if [[ "${STAGEOUT_MODE}" == "helac-output" ]]; then
+    stage_out_helac_output_archive "${RUN_DIR}"
+    echo "HELAC output generation complete!"
+elif [ "${SKIP_STAGEOUT:-0}" -eq 1 ]; then
     echo "[INFO] SKIP_STAGEOUT=1, skip XRootD stageout"
 else
+    # Create remote directory and copy to T2_CN_Beijing storage via XRootD
     echo "Creating remote directory on T2_CN_Beijing..."
-    xrdfs "${EOS_XRDFS_TARGET}" mkdir -p "${EOS_PATH_BASE}/${OUTPUT_DIR}" >/dev/null 2>&1 || {
+    make_remote_dir "${OUTPUT_DIR}" || {
         echo "Warning: mkdir failed (directory may already exist)"
     }
 
-    OUTPUT_FILE="root://${EOS_HOST}/${EOS_PATH_BASE}/${OUTPUT_DIR}/sample_${POOL_NAME}_${MY_SEED}.lhe"
+    OUTPUT_FILE=$(remote_url_for_spec "$(join_remote_spec "${OUTPUT_DIR}" "sample_${POOL_NAME}_${MY_SEED}.lhe")")
     echo "Staging out LHE file to: ${OUTPUT_FILE}"
     run_logged "xrdcp_lhe_stageout" xrdcp --nopbar --force "${FINAL_LHE_FILE}" "${OUTPUT_FILE}" || {
         echo "Error: Failed to stage out LHE file"

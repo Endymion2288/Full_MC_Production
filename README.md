@@ -127,6 +127,23 @@ python3 dag_generator.py generate \
 - `--test-mode`
   把 LHE 生成切到 fast-test。
 
+### 生成 HELAC-only Fock-state matrix DAG
+
+```bash
+python3 dag_generator.py generate-helac-matrix \
+  --output-dir generated/helac_matrix \
+  --output helac_matrix.dag \
+  --stageout-dir helac_matrix/jpsi_upsilon_fock_scan \
+  --seed-base 92000 \
+  --maxjobs-lhe 20
+```
+
+该入口只运行 HELAC-Onia，不接后续 shower/CMSSW。它会生成 162 个 job：
+9 个 `cc~` Fock state、9 个 `bb~` Fock state，以及 born / `+ g` 两种过程。
+每个 job 会上传一个 `PROC_HO_*/P0_*/output/` 目录 tarball，远端路径位于
+`/eos/ihep/cms/store/user/xcheng/MC_Production_v3/helac_matrix/jpsi_upsilon_fock_scan/`。
+色八重态 charm/bottom state 会在 HELAC 输入中把对应重夸克质量提高 `0.1 GeV`。
+
 ### 仅准备 worker runtime bundle
 
 ```bash
@@ -137,6 +154,9 @@ python3 dag_generator.py prepare-runtime \
 说明：
 
 - submit 模式下，bundle 输出目录必须放在 AFS 工作区，而不是 submit host 的本地 `/tmp`。
+- 需要 ntuple runtime 时加 `--include-ntuple`；若提供
+  `--cmssw15-runtime-tarball` 或 `common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz`
+  存在且结构有效，会优先打包预编译 CMSSW15 runtime，否则回退到 submodule source package。
 - 该命令会同时生成：
   - `lhe_runtime_bundle.tar.gz`
   - `processing_runtime_bundle.tar.gz`
@@ -192,6 +212,17 @@ python3 dag_generator.py generate-test \
 ```bash
 ./tests/run_all_tests.sh --submit --wait
 ```
+
+### 启用 ntuple runtime smoke
+
+```bash
+./tests/run_all_tests.sh \
+  --enable-ntuple \
+  --cmssw15-runtime-tarball common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz
+```
+
+启用 ntuple 时，校验会要求预编译 CMSSW15 runtime tarball 或
+`external/TPS-Onia2MuMu` submodule 至少有一个可用。
 
 ### 更细的测试控制
 

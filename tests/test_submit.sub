@@ -10,6 +10,8 @@
 universe = vanilla
 executable = /bin/bash
 initialdir = /tmp
+base_dir = /afs/cern.ch/user/c/chiw/condor/Full_MC_Production
+log_root = $(base_dir)/tests/log
 
 # Arguments: test_mode pool_type shower_mode random_seed num_events
 arguments = test_pipeline.sh $(test_mode) $(pool_type) $(shower_mode) $(Process) $(num_events)
@@ -21,14 +23,14 @@ shower_mode = normal
 num_events = 10
 
 # Input files
-transfer_input_files = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/tests/test_pipeline.sh, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/lhe_generation/run_helac.sh, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/lhe_generation/helac_package.tar.gz, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/lhe_generation/lhe_pythia6_pythia8.f, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/pythia_shower/shower_normal, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/pythia_shower/shower_phi, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/pythia_shower/shower_sps, \
-                       /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/processing/pythia_shower/event_mixer_multisource
+transfer_input_files = $(base_dir)/tests/test_pipeline.sh, \
+                       $(base_dir)/lhe_generation/run_helac.sh, \
+                       $(base_dir)/common/packages/helac_package.tar.gz, \
+                       $(base_dir)/lhe_generation/lhe_pythia6_pythia8.f, \
+                       $(base_dir)/processing/pythia_shower/shower_normal, \
+                       $(base_dir)/processing/pythia_shower/shower_phi, \
+                       $(base_dir)/processing/pythia_shower/shower_sps, \
+                       $(base_dir)/processing/pythia_shower/event_mixer_multisource
 
 should_transfer_files = YES
 when_to_transfer_output = ON_EXIT
@@ -50,9 +52,9 @@ environment = HOME=/tmp
 +PreAfsRequirements = True
 
 # Output/Error/Log
-output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/tests/log/test_$(Cluster)_$(Process).out
-error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/tests/log/test_$(Cluster)_$(Process).err
-log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/tests/log/test_$(Cluster)_$(Process).log
+output = $(log_root)/test_$(Cluster)_$(Process).out
+error  = $(log_root)/test_$(Cluster)_$(Process).err
+log    = $(log_root)/test_$(Cluster).log
 
 # Requirements
 Requirements = (OpSysAndVer == "AlmaLinux8" || OpSysAndVer == "CentOS8" || OpSysAndVer == "Rocky8" || OpSysAndVer == "AlmaLinux9" || OpSysAndVer == "Rocky9")

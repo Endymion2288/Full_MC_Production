@@ -14,7 +14,7 @@ Transfer_Input_Files = $(summary_bundle_path)
 
 Output = $(log_root)/summary_$(Cluster)_$(Process).stdout
 Error  = $(log_root)/summary_$(Cluster)_$(Process).stderr
-Log    = $(log_root)/summary_$(Cluster)_$(Process).log
+Log    = $(log_root)/summary_$(Cluster).log
 
 request_cpus = 1
 request_memory = 1GB

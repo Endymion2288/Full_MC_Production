@@ -41,6 +41,7 @@ REQUIRED_FILES = (
     "lhe_generation/run_helac.sh",
     "processing/run_chain.sh",
     "processing/templates/lhe_gen.sub",
+    "processing/templates/helac_matrix.sub",
     "processing/templates/processing.sub",
     "processing/templates/ntuple.sub",
     "processing/templates/summary.sub",
@@ -67,11 +68,18 @@ BUNDLE_NAMES = {
 }
 
 DEFAULT_LOG_ROOT = os.path.join(BASE_DIR, "log")
+CMSSW15_RUNTIME_TARBALL_NAME = "cmssw15_tpsonia2mumu_runtime.tar.gz"
 DEFAULT_CMSSW15_RUNTIME_TARBALL = os.path.join(
     BASE_DIR,
     "common",
     "packages",
-    "cmssw15_tpsonia2mumu_runtime.tar.gz",
+    CMSSW15_RUNTIME_TARBALL_NAME,
+)
+CMSSW15_RUNTIME_REQUIRED_MEMBERS = (
+    "CMSSW_15_0_15",
+    "CMSSW_15_0_15/src",
+    "CMSSW_15_0_15/src/HeavyFlavorAnalysis/TPS-Onia2MuMu",
+    "CMSSW_15_0_15/src/HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py",
 )
 
 POOL_DAG_LABELS = {
@@ -82,6 +90,25 @@ POOL_DAG_LABELS = {
     "pool_2jpsi_g": "DoubleJpsiG",
     "pool_jpsi_upsilon_CSCO": "JpsiUpsilon_CSCO",
 }
+
+HELAC_MATRIX_STATES = (
+    "3S11",
+    "3P01",
+    "3P11",
+    "3P21",
+    "3S18",
+    "1S08",
+    "3P08",
+    "3P18",
+    "3P28",
+)
+HELAC_MATRIX_STAGEOUT_DIR = (
+    "root://eosuser.cern.ch//eos/user/c/chiw/JpsiJpsiUps/tryHelac/"
+    "psiY_fullcalc_14May2026"
+)
+HELAC_MATRIX_CHARM_BASE_MASS = 1.54845
+HELAC_MATRIX_BOTTOM_BASE_MASS = 4.73020
+HELAC_MATRIX_OCTET_MASS_SHIFT = 0.1
 
 
 def canonical_mode(mode: str) -> str:
@@ -685,6 +712,62 @@ def bool_string(value: bool) -> str:
     return "true" if value else "false"
 
 
+def helac_state_is_octet(state: str) -> bool:
+    return state.strip().upper().endswith("8")
+
+
+def helac_matrix_mass(base_mass: float, state: str) -> float:
+    if helac_state_is_octet(state):
+        return base_mass + HELAC_MATRIX_OCTET_MASS_SHIFT
+    return base_mass
+
+
+def helac_matrix_slug(charm_state: str, bottom_state: str, extra_gluon: bool) -> str:
+    suffix = "g" if extra_gluon else "born"
+    return f"c{charm_state}_b{bottom_state}_{suffix}"
+
+
+def helac_matrix_process(charm_state: str, bottom_state: str, extra_gluon: bool) -> str:
+    process = f"generate g g > cc~({charm_state}) bb~({bottom_state})"
+    if extra_gluon:
+        process += " g"
+    return process
+
+
+def display_remote_target(target: str) -> str:
+    if target.startswith("root://"):
+        return target
+    if target.startswith("/eos/"):
+        return f"root://eosuser.cern.ch/{target}"
+    if target.startswith("/store/"):
+        return f"root://{EOS_HOST}/{target}"
+    return f"{EOS_BASE}/{target.strip('/')}"
+
+
+def iter_helac_matrix_jobs(seed_base: int) -> Iterable[Dict[str, object]]:
+    index = 0
+    for charm_state in HELAC_MATRIX_STATES:
+        for bottom_state in HELAC_MATRIX_STATES:
+            for extra_gluon in (False, True):
+                seed = seed_base + index
+                slug = helac_matrix_slug(charm_state, bottom_state, extra_gluon)
+                yield {
+                    "index": index,
+                    "slug": slug,
+                    "job_name": f"HELAC_{slug.upper()}",
+                    "charm_state": charm_state,
+                    "bottom_state": bottom_state,
+                    "extra_gluon": extra_gluon,
+                    "seed": seed,
+                    "process": helac_matrix_process(charm_state, bottom_state, extra_gluon),
+                    "charm_octet": helac_state_is_octet(charm_state),
+                    "bottom_octet": helac_state_is_octet(bottom_state),
+                    "cmass": helac_matrix_mass(HELAC_MATRIX_CHARM_BASE_MASS, charm_state),
+                    "bmass": helac_matrix_mass(HELAC_MATRIX_BOTTOM_BASE_MASS, bottom_state),
+                }
+                index += 1
+
+
 def dag_escape(value: object) -> str:
     """DAG VARS 使用双引号，这里只做最小必要转义。"""
 
@@ -774,6 +857,79 @@ def build_tpsonia2mumu_package(output_dir: str) -> Tuple[str, str]:
     return package_path, package_name
 
 
+def normalize_tar_name(name: str) -> str:
+    return name.lstrip("./").rstrip("/")
+
+
+def tar_contains_path(member_names: Iterable[str], path: str) -> bool:
+    normalized = path.rstrip("/")
+    prefix = f"{normalized}/"
+    return any(name == normalized or name.startswith(prefix) for name in member_names)
+
+
+def tar_member_names(path: str) -> List[str]:
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            return [normalize_tar_name(name) for name in archive.getnames()]
+    except (tarfile.TarError, OSError) as exc:
+        raise ValueError(f"Cannot read tarball {path}: {exc}") from exc
+
+
+def validate_cmssw15_runtime_tarball(path: str) -> None:
+    """Validate the prebuilt CMSSW15 ntuple runtime contract."""
+
+    member_names = tar_member_names(path)
+    missing = [
+        member
+        for member in CMSSW15_RUNTIME_REQUIRED_MEMBERS
+        if not tar_contains_path(member_names, member)
+    ]
+    if missing:
+        raise ValueError(
+            "CMSSW15 runtime tarball is missing required paths: "
+            + ", ".join(missing)
+        )
+
+
+def inspect_helac_package(path: str) -> Tuple[bool, str]:
+    """Return whether helac_package.tar.gz satisfies a usable worker contract."""
+
+    if not os.path.exists(path):
+        return False, "missing"
+
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            members = archive.getmembers()
+    except (tarfile.TarError, OSError) as exc:
+        return False, f"invalid tarball: {exc}"
+
+    member_names = [normalize_tar_name(member.name) for member in members]
+    has_source_fallback = (
+        "HELAC-Onia-2.7.6.tar.gz" in member_names
+        and "hepmc2.06.11.tgz" in member_names
+    )
+    has_prebuilt_helac = tar_contains_path(member_names, "HELAC-Onia-2.7.6/ho_cluster")
+    has_prebuilt_hepmc = tar_contains_path(member_names, "HepMC/HepMC-2.06.11/install")
+    absolute_symlinks = [
+        member.name
+        for member in members
+        if member.issym() and member.linkname.startswith("/")
+    ]
+
+    if has_prebuilt_helac:
+        detail = "prebuilt HELAC runtime"
+        if has_prebuilt_hepmc:
+            detail += " + prebuilt HepMC"
+        if absolute_symlinks:
+            detail += f"; {len(absolute_symlinks)} absolute symlink(s) will be normalized where known"
+        return True, detail
+
+    if has_source_fallback:
+        return True, "source fallback tarballs"
+
+    return False, "missing HELAC-Onia-2.7.6/ho_cluster or source fallback tarballs"
+
+
 def resolve_cmssw15_runtime_tarball(path: Optional[str]) -> Optional[str]:
     """Return a CMSSW15 ntuple runtime tarball path when one is available."""
 
@@ -781,8 +937,10 @@ def resolve_cmssw15_runtime_tarball(path: Optional[str]) -> Optional[str]:
         resolved = os.path.abspath(path)
         if not os.path.isfile(resolved):
             raise FileNotFoundError(f"CMSSW15 runtime tarball does not exist: {resolved}")
+        validate_cmssw15_runtime_tarball(resolved)
         return resolved
     if os.path.isfile(DEFAULT_CMSSW15_RUNTIME_TARBALL):
+        validate_cmssw15_runtime_tarball(DEFAULT_CMSSW15_RUNTIME_TARBALL)
         return DEFAULT_CMSSW15_RUNTIME_TARBALL
     return None
 
@@ -857,12 +1015,12 @@ def prepare_runtime_assets(
                         "runtime",
                         "common",
                         "packages",
-                        "cmssw15_tpsonia2mumu_runtime.tar.gz",
+                        CMSSW15_RUNTIME_TARBALL_NAME,
                     ),
                 )
             )
             assets["cmssw15_runtime_tarball_path"] = runtime_tarball
-            assets["cmssw15_runtime_tarball_name"] = "cmssw15_tpsonia2mumu_runtime.tar.gz"
+            assets["cmssw15_runtime_tarball_name"] = CMSSW15_RUNTIME_TARBALL_NAME
         elif os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
             package_path, package_name = build_tpsonia2mumu_package(output_dir)
             ntuple_items.append(
@@ -1178,18 +1336,26 @@ class DAGBuilder:
 
 
 def render_dagman_config(options: WorkflowOptions) -> str:
-    return "\n".join(
+    lines = ["# DAGMan 基础配置"]
+    if options.dagman_max_jobs_submitted > 0:
+        lines.append(f"DAGMAN_MAX_JOBS_SUBMITTED = {options.dagman_max_jobs_submitted}")
+    if options.dagman_max_jobs_idle > 0:
+        lines.append(f"DAGMAN_MAX_JOBS_IDLE = {options.dagman_max_jobs_idle}")
+    if options.dagman_max_jobs_submitted > 0 or options.dagman_max_jobs_idle > 0:
+        lines.extend(
+            (
+                "DAGMAN_MAX_SUBMITS_PER_INTERVAL = 20",
+                "DAGMAN_SUBMIT_DELAY = 1",
+            )
+        )
+    lines.extend(
         (
-            "# DAGMan 基础配置",
-            f"DAGMAN_MAX_JOBS_SUBMITTED = {options.dagman_max_jobs_submitted}",
-            f"DAGMAN_MAX_JOBS_IDLE = {options.dagman_max_jobs_idle}",
-            "DAGMAN_MAX_SUBMITS_PER_INTERVAL = 20",
-            "DAGMAN_SUBMIT_DELAY = 1",
             "DAGMAN_SUPPRESS_NOTIFICATION = True",
             "DAGMAN_GENERATE_RESCUE_DAG = True",
             "",
         )
     )
+    return "\n".join(lines)
 
 
 def write_generated_files(
@@ -1254,6 +1420,7 @@ def validate_environment(
     proxy_path: str,
     scan_existing: bool,
     strict_analysis_packages: bool,
+    cmssw15_runtime_tarball: Optional[str],
 ) -> int:
     required = campaign_names or []
     exit_code = 0
@@ -1279,17 +1446,31 @@ def validate_environment(
             exit_code = 1
 
     print("\n包检查:")
-    package_checks = [
-        ("common/packages/helac_package.tar.gz", True),
-        ("external/TPS-Onia2MuMu", strict_analysis_packages),
-    ]
-    for relative_path, required_flag in package_checks:
-        path = os.path.join(BASE_DIR, relative_path)
-        ok = os.path.exists(path)
-        status = "OK" if ok else ("缺失(可选)" if not required_flag else "缺失")
-        print(f"  - {relative_path:<40} {status}")
-        if required_flag and not ok:
+    helac_package_path = os.path.join(BASE_DIR, "common", "packages", "helac_package.tar.gz")
+    helac_ok, helac_status = inspect_helac_package(helac_package_path)
+    print(f"  - {'common/packages/helac_package.tar.gz':<40} {'OK' if helac_ok else '缺失/无效'} ({helac_status})")
+    if not helac_ok:
+        exit_code = 1
+
+    cmssw15_runtime_path: Optional[str] = None
+    cmssw15_runtime_status = "缺失(可选)"
+    try:
+        cmssw15_runtime_path = resolve_cmssw15_runtime_tarball(cmssw15_runtime_tarball)
+        if cmssw15_runtime_path:
+            cmssw15_runtime_status = f"OK ({cmssw15_runtime_path})"
+    except (FileNotFoundError, ValueError) as exc:
+        cmssw15_runtime_status = f"无效: {exc}"
+        if strict_analysis_packages or cmssw15_runtime_tarball:
             exit_code = 1
+
+    print(f"  - {CMSSW15_RUNTIME_TARBALL_NAME:<40} {cmssw15_runtime_status}")
+
+    tpsonia2mumu_ok = os.path.isdir(TPS_ONIA2MUMU_SUBMODULE)
+    tpsonia2mumu_required = strict_analysis_packages and not cmssw15_runtime_path
+    tpsonia2mumu_status = "OK" if tpsonia2mumu_ok else ("缺失(可选)" if not tpsonia2mumu_required else "缺失")
+    print(f"  - {'external/TPS-Onia2MuMu':<40} {tpsonia2mumu_status}")
+    if tpsonia2mumu_required and not tpsonia2mumu_ok:
+        exit_code = 1
 
     print("\n代理检查:")
     proxy_ok, timeleft, proxy_error = check_proxy_valid(proxy_path)
@@ -1419,6 +1600,183 @@ def execute_generation(
     print(f"  - DAG: {dag_path}")
     print(f"  - DAGMan 配置: {config_path}")
     print(f"  - 元数据: {metadata_path}")
+    print(f"  - 提交命令: condor_submit_dag {dag_path}")
+    return 0
+
+
+def execute_helac_matrix_generation(
+    output_dir: str,
+    dag_filename: str,
+    proxy_path: str,
+    seed_base: int,
+    stageout_dir: str,
+    lhe_unwevt: int,
+    test_mode: bool,
+    dagman_max_jobs_submitted: int,
+    dagman_max_jobs_idle: int,
+    log_root: str,
+    maxjobs_lhe: int,
+    dry_run: bool,
+) -> int:
+    output_dir = os.path.abspath(output_dir)
+    log_root = os.path.abspath(log_root)
+    if seed_base <= 10 or seed_base + (len(HELAC_MATRIX_STATES) ** 2 * 2) >= 100000:
+        raise ValueError("seed-base must leave all 162 HELAC matrix seeds between 11 and 99999")
+    if lhe_unwevt <= 0:
+        raise ValueError("--lhe-unwevt must be positive")
+    if not dry_run:
+        ensure_submit_visible_output_dir(output_dir)
+        helac_package_path = os.path.join(BASE_DIR, "common", "packages", "helac_package.tar.gz")
+        helac_ok, helac_status = inspect_helac_package(helac_package_path)
+        if not helac_ok:
+            raise FileNotFoundError(
+                "common/packages/helac_package.tar.gz is required for HELAC matrix jobs "
+                f"and is not usable: {helac_status}"
+            )
+
+    resource_options = WorkflowOptions(
+        jobs_per_campaign=1,
+        max_events=-1,
+        enable_ntuple=False,
+        cleanup=True,
+        test_mode=test_mode,
+        scan_existing=False,
+        force_generate_lhe=True,
+        proxy_path=proxy_path,
+        lhe_unwevt=lhe_unwevt,
+        dagman_max_jobs_submitted=dagman_max_jobs_submitted,
+        dagman_max_jobs_idle=dagman_max_jobs_idle,
+        log_root=log_root,
+        maxjobs_lhe=maxjobs_lhe,
+        maxjobs_processing=0,
+        maxjobs_ntuple=0,
+        cmssw15_runtime_tarball=None,
+    )
+    request_cpus, request_memory, request_disk = DAGBuilder(
+        output_dir=output_dir,
+        options=resource_options,
+        existing_pools={},
+        pool_requirements={},
+        runtime_assets={},
+    ).lhe_resource_request()
+
+    if dry_run:
+        runtime_assets = {
+            "lhe_bundle_path": "<dry-run>/lhe_runtime_bundle.tar.gz",
+            "lhe_bundle_name": BUNDLE_NAMES["lhe"],
+            "proxy_bundle_path": "<dry-run>/proxy_bundle.tar.gz",
+            "proxy_bundle_name": BUNDLE_NAMES["proxy"],
+        }
+    else:
+        ensure_dir(log_root)
+        runtime_assets = prepare_runtime_assets(output_dir, require_analysis_package=False)
+        proxy_bundle_path, proxy_bundle_name = build_proxy_bundle(output_dir, proxy_path)
+        runtime_assets["proxy_bundle_path"] = proxy_bundle_path
+        runtime_assets["proxy_bundle_name"] = proxy_bundle_name
+
+    dagman_config_path = os.path.join(output_dir, "dagman.config")
+    submit_template = os.path.join(BASE_DIR, "processing", "templates", "helac_matrix.sub")
+    matrix_jobs = list(iter_helac_matrix_jobs(seed_base))
+    dag_lines = [
+        "# ================================================",
+        "# HELAC-Onia J/psi + Upsilon Fock-state matrix DAG",
+        f"# 生成时间: {datetime.now().isoformat()}",
+        f"# Jobs: {len(matrix_jobs)}",
+        f"# Stageout: {display_remote_target(stageout_dir)}",
+        f"# 测试模式: {bool_string(test_mode)}",
+        "# ================================================",
+        "",
+        f"CONFIG {dagman_config_path}",
+        "",
+    ]
+    if maxjobs_lhe > 0:
+        dag_lines.extend([f"MAXJOBS lhe {maxjobs_lhe}", ""])
+    else:
+        dag_lines.append("")
+
+    for job in matrix_jobs:
+        dag_lines.append(
+            "# {process}; cmass={cmass:.5f}, bmass={bmass:.5f}".format(
+                process=job["process"],
+                cmass=job["cmass"],
+                bmass=job["bmass"],
+            )
+        )
+        dag_lines.append(f"JOB {job['job_name']} {submit_template}")
+        dag_lines.append(f"CATEGORY {job['job_name']} lhe")
+        dag_lines.append(
+            "VARS {job_name} charm_state=\"{charm_state}\" bottom_state=\"{bottom_state}\" "
+            "extra_gluon=\"{extra_gluon}\" job_slug=\"{job_slug}\" seed=\"{seed}\" "
+            "stageout_dir=\"{stageout_dir}\" min_pt_conia=\"6.0\" min_pt_bonia=\"4.0\" "
+            "min_pt_q=\"0.0\" unwevt=\"{unwevt}\" test_mode=\"{test_mode}\" "
+            "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
+            "lhe_bundle_path=\"{lhe_bundle_path}\" lhe_bundle_name=\"{lhe_bundle_name}\" "
+            "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
+            "log_root=\"{log_root}\"".format(
+                job_name=job["job_name"],
+                charm_state=dag_escape(job["charm_state"]),
+                bottom_state=dag_escape(job["bottom_state"]),
+                extra_gluon=dag_escape(bool_string(bool(job["extra_gluon"]))),
+                job_slug=dag_escape(job["slug"]),
+                seed=dag_escape(job["seed"]),
+                stageout_dir=dag_escape(stageout_dir.rstrip("/")),
+                unwevt=dag_escape(lhe_unwevt),
+                test_mode=dag_escape(bool_string(test_mode)),
+                request_cpus=dag_escape(request_cpus),
+                request_memory=dag_escape(request_memory),
+                request_disk=dag_escape(request_disk),
+                lhe_bundle_path=dag_escape(runtime_assets["lhe_bundle_path"]),
+                lhe_bundle_name=dag_escape(runtime_assets["lhe_bundle_name"]),
+                proxy_bundle_path=dag_escape(runtime_assets["proxy_bundle_path"]),
+                proxy_bundle_name=dag_escape(runtime_assets["proxy_bundle_name"]),
+                log_root=dag_escape(log_root),
+            )
+        )
+        dag_lines.append(f"RETRY {job['job_name']} 2")
+        dag_lines.append("")
+
+    metadata = OrderedDict(
+        [
+            ("created_at", datetime.now().isoformat()),
+            ("dag_path", os.path.join(output_dir, dag_filename)),
+            ("dagman_config_path", dagman_config_path),
+            (
+                "options",
+                OrderedDict(
+                    [
+                        ("seed_base", seed_base),
+                        ("stageout_dir", stageout_dir.rstrip("/")),
+                        ("lhe_unwevt", lhe_unwevt),
+                        ("test_mode", test_mode),
+                        ("dagman_max_jobs_submitted", dagman_max_jobs_submitted),
+                        ("dagman_max_jobs_idle", dagman_max_jobs_idle),
+                        ("log_root", log_root),
+                        ("maxjobs_lhe", maxjobs_lhe),
+                    ]
+                ),
+            ),
+            ("runtime_assets", runtime_assets),
+            ("jobs", matrix_jobs),
+        ]
+    )
+    dag_content = "\n".join(dag_lines)
+
+    if dry_run:
+        print(dag_content)
+        return 0
+
+    dag_path, config_path, metadata_path = write_generated_files(
+        output_dir=output_dir,
+        dag_filename=dag_filename,
+        dag_content=dag_content,
+        dagman_config_content=render_dagman_config(resource_options),
+        metadata=metadata,
+    )
+    print("HELAC matrix DAG 生成完成")
+    print(f"  - DAG: {dag_path}")
+    print(f"  - DAGMan 配置: {config_path}")
+    print(f"  - 元数据: {metadata_path}")
+    print(f"  - 作业数: {len(matrix_jobs)}")
     print(f"  - 提交命令: condor_submit_dag {dag_path}")
     return 0
 
@@ -1594,7 +1952,15 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument(
         "--strict-analysis-packages",
         action="store_true",
-        help="把 TPS-Onia2MuMu submodule 也当作硬依赖。",
+        help="要求 ntuple runtime 可用：预编译 CMSSW15 tarball 或 TPS-Onia2MuMu submodule。",
+    )
+    validate_parser.add_argument(
+        "--cmssw15-runtime-tarball",
+        default=None,
+        help=(
+            "预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball；"
+            "存在且有效时可替代 ntuple source submodule。"
+        ),
     )
 
     runtime_parser = subparsers.add_parser("prepare-runtime", help="生成 worker 运行所需的压缩包")
@@ -1642,6 +2008,69 @@ def build_parser() -> argparse.ArgumentParser:
         test_mode=True,
     )
 
+    matrix_parser = subparsers.add_parser(
+        "generate-helac-matrix",
+        help="生成 HELAC-only J/psi+Upsilon Fock-state matrix DAG",
+    )
+    matrix_parser.add_argument(
+        "--output-dir",
+        default=os.path.join(DEFAULT_OUTPUT_DIR, "helac_matrix"),
+        help="输出目录。",
+    )
+    matrix_parser.add_argument("--output", default="helac_matrix.dag", help="输出 DAG 文件名。")
+    matrix_parser.add_argument(
+        "--proxy-path",
+        default=detect_proxy_path(),
+        help="X509 代理路径；默认自动探测。",
+    )
+    matrix_parser.add_argument(
+        "--seed-base",
+        type=int,
+        default=92000,
+        help="162 个 HELAC matrix job 的起始 seed。",
+    )
+    matrix_parser.add_argument(
+        "--stageout-dir",
+        default=HELAC_MATRIX_STAGEOUT_DIR,
+        help="远端输出目录；支持 root:// URL、/eos/...、/store/... 或 T2 相对目录。",
+    )
+    matrix_parser.add_argument(
+        "--lhe-unwevt",
+        type=int,
+        default=100000,
+        help="每个 HELAC matrix job 的 unwevt。",
+    )
+    matrix_parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        default=False,
+        help="把 HELAC matrix job 切到 fast-test 积分设置。",
+    )
+    matrix_parser.add_argument(
+        "--dagman-max-jobs-submitted",
+        type=int,
+        default=0,
+        help="DAGMan 允许同时提交/运行的最大节点数；0 表示不写该限流配置。",
+    )
+    matrix_parser.add_argument(
+        "--dagman-max-jobs-idle",
+        type=int,
+        default=0,
+        help="DAGMan 允许同时处于 idle 状态的最大节点数；0 表示不写该限流配置。",
+    )
+    matrix_parser.add_argument(
+        "--log-root",
+        default=DEFAULT_LOG_ROOT,
+        help="HTCondor stdout/stderr/event log 输出目录。",
+    )
+    matrix_parser.add_argument(
+        "--maxjobs-lhe",
+        type=int,
+        default=0,
+        help="DAGMan HELAC matrix category throttle；0 表示不写 MAXJOBS 限流。",
+    )
+    matrix_parser.add_argument("--dry-run", action="store_true", help="只打印 DAG，不写文件。")
+
     return parser
 
 
@@ -1656,7 +2085,14 @@ def normalize_args(argv: Sequence[str]) -> Sequence[str]:
     if len(argv) <= 1:
         return argv
 
-    if argv[1] in {"list", "validate", "prepare-runtime", "generate", "generate-test"}:
+    if argv[1] in {
+        "list",
+        "validate",
+        "prepare-runtime",
+        "generate",
+        "generate-test",
+        "generate-helac-matrix",
+    }:
         return argv
 
     if "--list-campaigns" in argv[1:]:
@@ -1691,6 +2127,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             proxy_path=args.proxy_path,
             scan_existing=args.scan_existing,
             strict_analysis_packages=args.strict_analysis_packages,
+            cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
         )
 
     if args.command == "prepare-runtime":
@@ -1700,6 +2137,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             include_ntuple=args.include_ntuple,
             cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
         )
+
+    if args.command == "generate-helac-matrix":
+        try:
+            return execute_helac_matrix_generation(
+                output_dir=args.output_dir,
+                dag_filename=args.output,
+                proxy_path=args.proxy_path,
+                seed_base=args.seed_base,
+                stageout_dir=args.stageout_dir,
+                lhe_unwevt=args.lhe_unwevt,
+                test_mode=args.test_mode,
+                dagman_max_jobs_submitted=args.dagman_max_jobs_submitted,
+                dagman_max_jobs_idle=args.dagman_max_jobs_idle,
+                log_root=args.log_root,
+                maxjobs_lhe=args.maxjobs_lhe,
+                dry_run=args.dry_run,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     if args.command in {"generate", "generate-test"}:
         campaign_names = expand_campaign_selection(args.campaign)

@@ -8,6 +8,8 @@ This directory should contain the tarballs transferred to worker nodes.
 `run_helac.sh` accepts either source tarballs or a prebuilt HELAC-Onia runtime.
 When a compiled `HELAC-Onia-2.7.6/ho_cluster` is present, the worker reuses it
 and normalizes known generated absolute symlinks before running.
+The same package is used by `dag_generator.py generate-helac-matrix` for the
+162-job J/psi+Upsilon Fock-state HELAC-only scan.
 
 Contents:
 - `HELAC-Onia-2.7.6.tar.gz`
@@ -54,6 +56,13 @@ For ntuple production, place a prebuilt CMSSW 15 project tarball here or pass it
 with `--cmssw15-runtime-tarball`. It should contain `CMSSW_15_0_15/` at archive
 root. Worker jobs unpack it, run `scram build ProjectRename`, and skip the
 per-job `scram b HeavyFlavorAnalysis/TPS-Onia2MuMu` rebuild.
+
+The generator validates this contract before packaging. At minimum the archive
+must contain:
+
+- `CMSSW_15_0_15/src/`
+- `CMSSW_15_0_15/src/HeavyFlavorAnalysis/TPS-Onia2MuMu/`
+- `CMSSW_15_0_15/src/HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py`
 
 ## Verification
 

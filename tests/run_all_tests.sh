@@ -19,6 +19,7 @@ JOBS=1
 MAX_EVENTS=5
 SCAN_EXISTING=1
 ENABLE_NTUPLE=0
+CMSSW15_RUNTIME_TARBALL=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -46,9 +47,13 @@ while [[ $# -gt 0 ]]; do
             ENABLE_NTUPLE=1
             shift
             ;;
+        --cmssw15-runtime-tarball)
+            CMSSW15_RUNTIME_TARBALL="$2"
+            shift 2
+            ;;
         -h|--help)
             cat << EOF
-用法: $0 [--submit] [--wait] [--jobs N] [--max-events N] [--no-scan-existing] [--enable-ntuple]
+用法: $0 [--submit] [--wait] [--jobs N] [--max-events N] [--no-scan-existing] [--enable-ntuple] [--cmssw15-runtime-tarball PATH]
 EOF
             exit 0
             ;;
@@ -79,6 +84,10 @@ fi
 
 if [[ ${ENABLE_NTUPLE} -eq 1 ]]; then
     CMD+=(--enable-ntuple)
+fi
+
+if [[ -n "${CMSSW15_RUNTIME_TARBALL}" ]]; then
+    CMD+=(--cmssw15-runtime-tarball "${CMSSW15_RUNTIME_TARBALL}")
 fi
 
 echo "[INFO] 执行测试入口: ${CMD[*]}"

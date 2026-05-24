@@ -33,6 +33,7 @@ DO_WAIT=0
 ENABLE_NTUPLE=0
 FORCE_GENERATE=0
 SCAN_EXISTING=1
+CMSSW15_RUNTIME_TARBALL=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -68,6 +69,10 @@ while [[ $# -gt 0 ]]; do
             ENABLE_NTUPLE=1
             shift
             ;;
+        --cmssw15-runtime-tarball)
+            CMSSW15_RUNTIME_TARBALL="$2"
+            shift 2
+            ;;
         --force-generate-lhe)
             FORCE_GENERATE=1
             shift
@@ -89,6 +94,8 @@ while [[ $# -gt 0 ]]; do
   --submit               生成后立即 condor_submit_dag
   --wait                 提交后调用 condor_wait 等待 DAGMan 结束
   --enable-ntuple        测试时也执行 ntuple
+  --cmssw15-runtime-tarball PATH
+                         使用预编译 CMSSW15 TPS-Onia2MuMu runtime tarball
   --force-generate-lhe   不复用远端 pool，强制重生 LHE
   --no-scan-existing     不扫描远端已有 pool
 EOF
@@ -113,6 +120,12 @@ VALIDATE_CMD=(python3 "${BASE_DIR}/dag_generator.py" validate --campaign "$(IFS=
 if [[ ${SCAN_EXISTING} -eq 1 ]]; then
     VALIDATE_CMD+=(--scan-existing)
 fi
+if [[ ${ENABLE_NTUPLE} -eq 1 ]]; then
+    VALIDATE_CMD+=(--strict-analysis-packages)
+fi
+if [[ -n "${CMSSW15_RUNTIME_TARBALL}" ]]; then
+    VALIDATE_CMD+=(--cmssw15-runtime-tarball "${CMSSW15_RUNTIME_TARBALL}")
+fi
 msg_info "运行环境校验: ${VALIDATE_CMD[*]}"
 "${VALIDATE_CMD[@]}"
 
@@ -132,6 +145,10 @@ if [[ ${ENABLE_NTUPLE} -eq 1 ]]; then
     GEN_CMD+=(--enable-ntuple)
 else
     GEN_CMD+=(--disable-ntuple)
+fi
+
+if [[ -n "${CMSSW15_RUNTIME_TARBALL}" ]]; then
+    GEN_CMD+=(--cmssw15-runtime-tarball "${CMSSW15_RUNTIME_TARBALL}")
 fi
 
 if [[ ${FORCE_GENERATE} -eq 1 ]]; then
