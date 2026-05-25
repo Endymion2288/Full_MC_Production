@@ -1,12 +1,14 @@
 # ==============================================================================
-# ntuple_jup_cfg.py - Ntuple configuration for JUP (J/psi + Upsilon + phi) analysis
+# ntuple_jjp_efficiency_cfg.py - JJP efficiency/acceptance ntuple configuration
 # ==============================================================================
-# Repo-owned config used by the production wrapper for JpsiUpsPhi ntuples.
-# Based on TPS-Onia2MuMu-Dev-J-U-P branch
+# Repo-owned config used by the production wrapper for JpsiJpsiPhi
+# efficiency/acceptance ntuples. Persistent analyzer behavior is fixed here;
+# cmsRun CLI arguments are reserved for input/output/maxEvents switching.
+# Based on TPS-Onia2MuMu-Dev-J-J-P branch
 # Reads MiniAOD and produces flat ntuple for physics analysis
 #
 # Usage:
-#   cmsRun ntuple_jup_cfg.py inputFiles=file:input.root outputFile=output.root runOnMC=True
+#   cmsRun ntuple_jjp_efficiency_cfg.py inputFiles=file:input.root outputFile=output.root runOnMC=True
 # ==============================================================================
 
 import FWCore.ParameterSet.Config as cms
@@ -18,7 +20,7 @@ ivars = VarParsing.VarParsing('analysis')
 ivars.inputFiles = (
     'file:input_MINIAOD.root',
 )
-ivars.outputFile = 'ntuple_jup.root'
+ivars.outputFile = 'ntuple_jjp.root'
 
 # Custom options
 ivars.register('runOnMC',
@@ -27,15 +29,12 @@ ivars.register('runOnMC',
                VarParsing.VarParsing.varType.bool,
                "Run on MC (True) or Data (False)")
 
-# Note: maxEvents is already registered by VarParsing('analysis')
-# Set default value instead of re-registering
 ivars.maxEvents = -1
-
 ivars.parseArguments()
 
 # Configuration flags
-ANALYSIS_MODE = 'JpsiUpsPhi'
-DO_MONTE_CARLO_TREE = False
+ANALYSIS_MODE = 'JpsiJpsiPhi'
+DO_MONTE_CARLO_TREE = True
 REQUIRE_ACCEPTED_CANDIDATES_FOR_MONTE_CARLO_TREE = False
 AddCaloMuon = False
 runOnMC = ivars.runOnMC
@@ -85,7 +84,7 @@ process.out = cms.OutputModule("PoolOutputModule",
     outputCommands = cms.untracked.vstring('drop *')
 )
 
-# Filters (MiniAOD has no generalTracks, so omit noscraping)
+# Filters
 process.primaryVertexFilter = cms.EDFilter("GoodVertexFilter",
     vertexCollection = cms.InputTag('offlineSlimmedPrimaryVertices'),
     minimumNDOF = cms.uint32(4),
@@ -111,7 +110,7 @@ patMuons.embedTrack = cms.bool(True)
 patMuons.embedPickyMuon = cms.bool(False)
 patMuons.embedTpfmsMuon = cms.bool(False)
 
-# Filter sequence (only PV filter for MiniAOD inputs)
+# Filter sequence
 process.filter = cms.Sequence(process.primaryVertexFilter)
 
 # Gen particle producer for MC matching
@@ -130,13 +129,14 @@ if HIFormat:
 if UseGenPlusSim:
     process.muonMatch.matched = cms.InputTag("genParticlePlusGEANT")
 
-# Track tools for JUP analysis
+# Track tools for JJP analysis
 from PhysicsTools.PatAlgos.tools.trackTools import *
 
 # ==============================================================================
-# JUP-specific analyzer configuration
+# JJP-specific analyzer configuration
 # ==============================================================================
 
+# MultiLepPAT analyzer (J/psi + J/psi + phi)
 process.mkcands = cms.EDAnalyzer('MultiLepPAT',
         analysisMode = cms.untracked.string(ANALYSIS_MODE),
         HLTriggerResults = cms.untracked.InputTag("TriggerResults","","HLT"),
@@ -175,7 +175,7 @@ process.mkcands = cms.EDAnalyzer('MultiLepPAT',
 
         TriggersForUpsilon = cms.untracked.vstring("HLT_Trimuon5_3p5_2_Upsilon_Muon_v"),
         FiltersForUpsilon = cms.untracked.vstring("hltVertexmumuFilterUpsilonMuon"),
- 
+
         Chi2NDF_Track =  cms.untracked.double(15.0),
         OniaDecayVtxProbCut = cms.untracked.double(0.01)
 )
@@ -202,5 +202,4 @@ process.p = cms.Path(
     process.mkcands
 )
 
-# Schedule
 process.schedule = cms.Schedule(process.p)

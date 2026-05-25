@@ -27,11 +27,13 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT_DIR = os.path.join(BASE_DIR, "generated")
 TEST_OUTPUT_DIR = os.path.join(BASE_DIR, "tests", "generated")
+TPS_ONIA2MUMU_SUBMODULE = os.path.join(BASE_DIR, "external", "TPS-Onia2MuMu")
 
 EOS_HOST = "cceos.ihep.ac.cn"
 EOS_XRDFS_TARGET = EOS_HOST
 EOS_PATH_BASE = "/eos/ihep/cms/store/user/xcheng/MC_Production_v3"
 EOS_BASE = f"root://{EOS_HOST}/{EOS_PATH_BASE}"
+EOS_OUTPUT = f"{EOS_BASE}/output"
 STORAGE_SITE = "T2_CN_Beijing"
 DEFAULT_TEST_CAMPAIGNS = ("JJP_DPS2_CS", "JJP_DPS2_G", "JUP_DPS1")
 POOL_SCAN_CACHE_ENV = "DAG_GENERATOR_POOL_SCAN_CACHE"
@@ -41,7 +43,9 @@ REQUIRED_FILES = (
     "lhe_generation/run_helac.sh",
     "processing/run_chain.sh",
     "processing/templates/lhe_gen.sub",
+    "processing/templates/helac_matrix.sub",
     "processing/templates/processing.sub",
+    "processing/templates/ntuple.sub",
     "processing/templates/summary.sub",
     "processing/templates/summary.sh",
     "common/cmssw_configs/hepmc_to_GENSIM.py",
@@ -167,9 +171,25 @@ MACHINE_ENV_ALIASES = {
 BUNDLE_NAMES = {
     "lhe": "lhe_runtime_bundle.tar.gz",
     "processing": "processing_runtime_bundle.tar.gz",
+    "ntuple": "ntuple_runtime_bundle.tar.gz",
     "summary": "summary_runtime_bundle.tar.gz",
     "proxy": "proxy_bundle.tar.gz",
 }
+
+DEFAULT_LOG_ROOT = os.path.join(BASE_DIR, "log")
+CMSSW15_RUNTIME_TARBALL_NAME = "cmssw15_tpsonia2mumu_runtime.tar.gz"
+DEFAULT_CMSSW15_RUNTIME_TARBALL = os.path.join(
+    BASE_DIR,
+    "common",
+    "packages",
+    CMSSW15_RUNTIME_TARBALL_NAME,
+)
+CMSSW15_RUNTIME_REQUIRED_MEMBERS = (
+    "CMSSW_15_0_15",
+    "CMSSW_15_0_15/src",
+    "CMSSW_15_0_15/src/HeavyFlavorAnalysis/TPS-Onia2MuMu",
+    "CMSSW_15_0_15/src/HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py",
+)
 
 POOL_DAG_LABELS = {
     "pool_jpsi_CSCO_g": "JpsiG_CSCO",
@@ -179,6 +199,25 @@ POOL_DAG_LABELS = {
     "pool_2jpsi_g": "DoubleJpsiG",
     "pool_jpsi_upsilon_CSCO": "JpsiUpsilon_CSCO",
 }
+
+HELAC_MATRIX_STATES = (
+    "3S11",
+    "3P01",
+    "3P11",
+    "3P21",
+    "3S18",
+    "1S08",
+    "3P08",
+    "3P18",
+    "3P28",
+)
+HELAC_MATRIX_STAGEOUT_DIR = (
+    "root://eosuser.cern.ch//eos/user/c/chiw/JpsiJpsiUps/tryHelac/"
+    "psiY_fullcalc_14May2026"
+)
+HELAC_MATRIX_CHARM_BASE_MASS = 1.54845
+HELAC_MATRIX_BOTTOM_BASE_MASS = 4.73020
+HELAC_MATRIX_OCTET_MASS_SHIFT = 0.1
 
 
 def canonical_mode(mode: str) -> str:
@@ -311,6 +350,11 @@ class WorkflowOptions:
         machine_env: Optional[MachineEnv] = None,
         local_log_dir: str = "",
         local_output_base: str = "",
+        log_root: str = "",
+        maxjobs_lhe: int = 20,
+        maxjobs_processing: int = 50,
+        maxjobs_ntuple: int = 30,
+        cmssw15_runtime_tarball: Optional[str] = None,
     ):
         self.machine_env = machine_env or MACHINE_ENVS["lxplus_t2_ihep"]
         self.jobs_per_campaign = jobs_per_campaign
@@ -326,7 +370,12 @@ class WorkflowOptions:
         self.dagman_max_jobs_submitted = dagman_max_jobs_submitted
         self.dagman_max_jobs_idle = dagman_max_jobs_idle
         self.local_log_dir = local_log_dir or self.machine_env.log_dir
+        self.log_root = log_root or self.local_log_dir
         self.local_output_base = local_output_base or self.machine_env.local_output_base
+        self.maxjobs_lhe = maxjobs_lhe
+        self.maxjobs_processing = maxjobs_processing
+        self.maxjobs_ntuple = maxjobs_ntuple
+        self.cmssw15_runtime_tarball = cmssw15_runtime_tarball
 
     def resolved_lhe_unwevt(self) -> int:
         if self.lhe_unwevt is not None:
@@ -350,6 +399,11 @@ class WorkflowOptions:
             "dagman_max_jobs_idle": self.dagman_max_jobs_idle,
             "local_log_dir": self.local_log_dir,
             "local_output_base": self.local_output_base,
+            "log_root": self.log_root,
+            "maxjobs_lhe": self.maxjobs_lhe,
+            "maxjobs_processing": self.maxjobs_processing,
+            "maxjobs_ntuple": self.maxjobs_ntuple,
+            "cmssw15_runtime_tarball": self.cmssw15_runtime_tarball,
         }
 
 
@@ -924,6 +978,62 @@ def bool_string(value: bool) -> str:
     return "true" if value else "false"
 
 
+def helac_state_is_octet(state: str) -> bool:
+    return state.strip().upper().endswith("8")
+
+
+def helac_matrix_mass(base_mass: float, state: str) -> float:
+    if helac_state_is_octet(state):
+        return base_mass + HELAC_MATRIX_OCTET_MASS_SHIFT
+    return base_mass
+
+
+def helac_matrix_slug(charm_state: str, bottom_state: str, extra_gluon: bool) -> str:
+    suffix = "g" if extra_gluon else "born"
+    return f"c{charm_state}_b{bottom_state}_{suffix}"
+
+
+def helac_matrix_process(charm_state: str, bottom_state: str, extra_gluon: bool) -> str:
+    process = f"generate g g > cc~({charm_state}) bb~({bottom_state})"
+    if extra_gluon:
+        process += " g"
+    return process
+
+
+def display_remote_target(target: str) -> str:
+    if target.startswith("root://"):
+        return target
+    if target.startswith("/eos/"):
+        return f"root://eosuser.cern.ch/{target}"
+    if target.startswith("/store/"):
+        return f"root://{EOS_HOST}/{target}"
+    return f"{EOS_BASE}/{target.strip('/')}"
+
+
+def iter_helac_matrix_jobs(seed_base: int) -> Iterable[Dict[str, object]]:
+    index = 0
+    for charm_state in HELAC_MATRIX_STATES:
+        for bottom_state in HELAC_MATRIX_STATES:
+            for extra_gluon in (False, True):
+                seed = seed_base + index
+                slug = helac_matrix_slug(charm_state, bottom_state, extra_gluon)
+                yield {
+                    "index": index,
+                    "slug": slug,
+                    "job_name": f"HELAC_{slug.upper()}",
+                    "charm_state": charm_state,
+                    "bottom_state": bottom_state,
+                    "extra_gluon": extra_gluon,
+                    "seed": seed,
+                    "process": helac_matrix_process(charm_state, bottom_state, extra_gluon),
+                    "charm_octet": helac_state_is_octet(charm_state),
+                    "bottom_octet": helac_state_is_octet(bottom_state),
+                    "cmass": helac_matrix_mass(HELAC_MATRIX_CHARM_BASE_MASS, charm_state),
+                    "bmass": helac_matrix_mass(HELAC_MATRIX_BOTTOM_BASE_MASS, bottom_state),
+                }
+                index += 1
+
+
 def dag_escape(value: object) -> str:
     """DAG VARS 使用双引号，这里只做最小必要转义。"""
 
@@ -975,7 +1085,141 @@ def build_proxy_bundle(output_dir: str, proxy_path: str) -> Tuple[str, str]:
     return bundle_path, bundle_name
 
 
-def prepare_runtime_assets(output_dir: str) -> Dict[str, str]:
+def build_tpsonia2mumu_package(output_dir: str) -> Tuple[str, str]:
+    """从 git submodule 生成 worker 侧使用的 TPS-Onia2MuMu tarball。"""
+
+    if not os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
+        raise FileNotFoundError(
+            "TPS-Onia2MuMu submodule 不存在，请先执行 "
+            "`git submodule update --init --recursive`。"
+        )
+
+    package_name = "tpsonia2mumu_code.tar.gz"
+    package_path = os.path.join(output_dir, package_name)
+    source_root = TPS_ONIA2MUMU_SUBMODULE
+    arc_root = "HeavyFlavorAnalysis/TPS-Onia2MuMu"
+
+    ensure_dir(output_dir)
+    with tarfile.open(package_path, "w:gz") as archive:
+        for root, dirs, files in os.walk(source_root):
+            rel_root = os.path.relpath(root, source_root)
+            dirs[:] = [
+                entry
+                for entry in dirs
+                if entry not in {".git", "__pycache__", "crabData"}
+            ]
+
+            if rel_root == ".":
+                arc_dir = arc_root
+            else:
+                arc_dir = os.path.join(arc_root, rel_root)
+                archive.add(root, arcname=arc_dir, recursive=False)
+
+            for filename in files:
+                if filename in {".git"}:
+                    continue
+                if filename.endswith((".pyc", ".pyo", ".root")):
+                    continue
+                source_path = os.path.join(root, filename)
+                archive.add(source_path, arcname=os.path.join(arc_dir, filename), recursive=False)
+
+    return package_path, package_name
+
+
+def normalize_tar_name(name: str) -> str:
+    return name.lstrip("./").rstrip("/")
+
+
+def tar_contains_path(member_names: Iterable[str], path: str) -> bool:
+    normalized = path.rstrip("/")
+    prefix = f"{normalized}/"
+    return any(name == normalized or name.startswith(prefix) for name in member_names)
+
+
+def tar_member_names(path: str) -> List[str]:
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            return [normalize_tar_name(name) for name in archive.getnames()]
+    except (tarfile.TarError, OSError) as exc:
+        raise ValueError(f"Cannot read tarball {path}: {exc}") from exc
+
+
+def validate_cmssw15_runtime_tarball(path: str) -> None:
+    """Validate the prebuilt CMSSW15 ntuple runtime contract."""
+
+    member_names = tar_member_names(path)
+    missing = [
+        member
+        for member in CMSSW15_RUNTIME_REQUIRED_MEMBERS
+        if not tar_contains_path(member_names, member)
+    ]
+    if missing:
+        raise ValueError(
+            "CMSSW15 runtime tarball is missing required paths: "
+            + ", ".join(missing)
+        )
+
+
+def inspect_helac_package(path: str) -> Tuple[bool, str]:
+    """Return whether helac_package.tar.gz satisfies a usable worker contract."""
+
+    if not os.path.exists(path):
+        return False, "missing"
+
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            members = archive.getmembers()
+    except (tarfile.TarError, OSError) as exc:
+        return False, f"invalid tarball: {exc}"
+
+    member_names = [normalize_tar_name(member.name) for member in members]
+    has_source_fallback = (
+        "HELAC-Onia-2.7.6.tar.gz" in member_names
+        and "hepmc2.06.11.tgz" in member_names
+    )
+    has_prebuilt_helac = tar_contains_path(member_names, "HELAC-Onia-2.7.6/ho_cluster")
+    has_prebuilt_hepmc = tar_contains_path(member_names, "HepMC/HepMC-2.06.11/install")
+    absolute_symlinks = [
+        member.name
+        for member in members
+        if member.issym() and member.linkname.startswith("/")
+    ]
+
+    if has_prebuilt_helac:
+        detail = "prebuilt HELAC runtime"
+        if has_prebuilt_hepmc:
+            detail += " + prebuilt HepMC"
+        if absolute_symlinks:
+            detail += f"; {len(absolute_symlinks)} absolute symlink(s) will be normalized where known"
+        return True, detail
+
+    if has_source_fallback:
+        return True, "source fallback tarballs"
+
+    return False, "missing HELAC-Onia-2.7.6/ho_cluster or source fallback tarballs"
+
+
+def resolve_cmssw15_runtime_tarball(path: Optional[str]) -> Optional[str]:
+    """Return a CMSSW15 ntuple runtime tarball path when one is available."""
+
+    if path:
+        resolved = os.path.abspath(path)
+        if not os.path.isfile(resolved):
+            raise FileNotFoundError(f"CMSSW15 runtime tarball does not exist: {resolved}")
+        validate_cmssw15_runtime_tarball(resolved)
+        return resolved
+    if os.path.isfile(DEFAULT_CMSSW15_RUNTIME_TARBALL):
+        validate_cmssw15_runtime_tarball(DEFAULT_CMSSW15_RUNTIME_TARBALL)
+        return DEFAULT_CMSSW15_RUNTIME_TARBALL
+    return None
+
+
+def prepare_runtime_assets(
+    output_dir: str,
+    require_analysis_package: bool = False,
+    cmssw15_runtime_tarball: Optional[str] = None,
+    include_ntuple_in_processing: bool = False,
+) -> Dict[str, str]:
     """生成 LHE / processing / summary 运行 bundle。"""
 
     ensure_dir(output_dir)
@@ -1017,21 +1261,82 @@ def prepare_runtime_assets(output_dir: str) -> Dict[str, str]:
         ),
         (os.path.join(BASE_DIR, "common", "octet_pdg.py"), "runtime/common/octet_pdg.py"),
     ]
-    for package_name in ("jjp_code.tar.gz", "jup_code.tar.gz"):
-        package_path = os.path.join(BASE_DIR, "common", "packages", package_name)
-        if os.path.exists(package_path):
-            processing_items.append(
-                (
-                    package_path,
-                    os.path.join("runtime", "common", "packages", package_name),
-                )
-            )
-
     processing_bundle_name = BUNDLE_NAMES["processing"]
     processing_bundle_path = os.path.join(output_dir, processing_bundle_name)
     build_bundle(processing_bundle_path, processing_items)
     assets["processing_bundle_path"] = processing_bundle_path
     assets["processing_bundle_name"] = processing_bundle_name
+
+    if require_analysis_package:
+        analysis_package_items: List[Tuple[str, str]] = []
+        runtime_tarball = resolve_cmssw15_runtime_tarball(cmssw15_runtime_tarball)
+        if runtime_tarball:
+            analysis_package_items.append(
+                (
+                    runtime_tarball,
+                    os.path.join(
+                        "runtime",
+                        "common",
+                        "packages",
+                        CMSSW15_RUNTIME_TARBALL_NAME,
+                    ),
+                )
+            )
+            assets["cmssw15_runtime_tarball_path"] = runtime_tarball
+            assets["cmssw15_runtime_tarball_name"] = CMSSW15_RUNTIME_TARBALL_NAME
+        elif os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
+            package_path, package_name = build_tpsonia2mumu_package(output_dir)
+            analysis_package_items.append(
+                (
+                    package_path,
+                    os.path.join("runtime", "common", "packages", package_name),
+                )
+            )
+            assets["tpsonia2mumu_package_path"] = package_path
+            assets["tpsonia2mumu_package_name"] = package_name
+        else:
+            raise FileNotFoundError(
+                "需要打包 TPS-Onia2MuMu，但既没有预编译 CMSSW15 runtime tarball，"
+                "也没有初始化 submodule。请提供 --cmssw15-runtime-tarball，"
+                "或执行 `git submodule update --init --recursive`。"
+            )
+
+        if include_ntuple_in_processing:
+            processing_items.extend(analysis_package_items)
+            build_bundle(processing_bundle_path, processing_items)
+            return_assets = assets
+            return_assets["processing_bundle_path"] = processing_bundle_path
+            return_assets["processing_bundle_name"] = processing_bundle_name
+            summary_bundle_name = BUNDLE_NAMES["summary"]
+            summary_bundle_path = os.path.join(output_dir, summary_bundle_name)
+            build_bundle(
+                summary_bundle_path,
+                (
+                    (
+                        os.path.join(BASE_DIR, "processing", "templates", "summary.sh"),
+                        "runtime/processing/templates/summary.sh",
+                    ),
+                ),
+            )
+            return_assets["summary_bundle_path"] = summary_bundle_path
+            return_assets["summary_bundle_name"] = summary_bundle_name
+            return return_assets
+
+        ntuple_items: List[Tuple[str, str]] = [
+            (os.path.join(BASE_DIR, "processing", "run_chain.sh"), "runtime/processing/run_chain.sh"),
+            (
+                os.path.join(BASE_DIR, "common", "cmssw_configs"),
+                "runtime/common/cmssw_configs",
+            ),
+            (os.path.join(BASE_DIR, "common", "octet_pdg.py"), "runtime/common/octet_pdg.py"),
+        ]
+        ntuple_items.extend(analysis_package_items)
+
+        ntuple_bundle_name = BUNDLE_NAMES["ntuple"]
+        ntuple_bundle_path = os.path.join(output_dir, ntuple_bundle_name)
+        build_bundle(ntuple_bundle_path, ntuple_items)
+        assets["ntuple_bundle_path"] = ntuple_bundle_path
+        assets["ntuple_bundle_name"] = ntuple_bundle_name
 
     summary_bundle_name = BUNDLE_NAMES["summary"]
     summary_bundle_path = os.path.join(output_dir, summary_bundle_name)
@@ -1094,6 +1399,11 @@ class DAGBuilder:
             return "4", "12GB", "20GB"
         return "8", "20GB", "50GB"
 
+    def ntuple_resource_request(self) -> Tuple[str, str, str]:
+        if self.options.test_mode:
+            return "4", "8GB", "10GB"
+        return "4", "12GB", "20GB"
+
     def ensure_lhe_jobs(self, pool_name: str, required_count: int) -> None:
         """全局共享同一个 pool 的生成节点，避免跨 campaign 重复生成。"""
 
@@ -1116,6 +1426,7 @@ class DAGBuilder:
             self.dag_lines.append(
                 f"JOB {job_name} {os.path.join(BASE_DIR, self.options.machine_env.lhe_submit_template)}"
             )
+            self.dag_lines.append(f"CATEGORY {job_name} lhe")
             self.dag_lines.append(
                 "VARS {job} pool=\"{pool}\" seed=\"{seed}\" "
                 "min_pt_conia=\"{min_pt_conia}\" min_pt_bonia=\"{min_pt_bonia}\" "
@@ -1124,6 +1435,7 @@ class DAGBuilder:
                 "lhe_bundle_path=\"{lhe_bundle_path}\" lhe_bundle_name=\"{lhe_bundle_name}\" "
                 "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
                 "log_dir=\"{log_dir}\" local_output_base=\"{local_output_base}\" "
+                "log_root=\"{log_root}\" "
                 "lhe_wrapper_path=\"{lhe_wrapper_path}\" target_machine=\"{target_machine}\"".format(
                     job=job_name,
                     pool=dag_escape(pool.name),
@@ -1146,6 +1458,7 @@ class DAGBuilder:
                         os.path.join(BASE_DIR, "lhe_generation", "condor_wrappers", "run_lhe_gen.sh")
                     ),
                     target_machine=dag_escape(self.options.machine_env.target_machine),
+                    log_root=dag_escape(self.options.log_root),
                 )
             )
             self.dag_lines.append(f"RETRY {job_name} 2")
@@ -1178,9 +1491,13 @@ class DAGBuilder:
 
         job_name = f"PROC_{campaign_name}_{job_index}"
         request_cpus, request_memory, request_disk = self.processing_resource_request()
+        processing_enable_ntuple = (
+            self.options.enable_ntuple if self.options.machine_env.uses_local_storage else False
+        )
         self.dag_lines.append(
             f"JOB {job_name} {os.path.join(BASE_DIR, self.options.machine_env.processing_submit_template)}"
         )
+        self.dag_lines.append(f"CATEGORY {job_name} processing")
         self.dag_lines.append(
             "VARS {job} campaign=\"{campaign}\" job_id=\"{job_id}\" "
             "inputs=\"{inputs}\" modes=\"{modes}\" analysis=\"{analysis}\" "
@@ -1191,6 +1508,7 @@ class DAGBuilder:
             "processing_bundle_name=\"{processing_bundle_name}\" "
             "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
             "log_dir=\"{log_dir}\" local_output_base=\"{local_output_base}\" "
+            "log_root=\"{log_root}\" "
             "processing_wrapper_path=\"{processing_wrapper_path}\" target_machine=\"{target_machine}\" "
             "premix_input_mode=\"{premix_input_mode}\" "
             "premix_redirector=\"{premix_redirector}\" "
@@ -1204,7 +1522,7 @@ class DAGBuilder:
                 analysis=dag_escape(campaign.analysis_type),
                 n_sources=dag_escape(campaign.n_sources),
                 max_events=dag_escape(self.options.max_events),
-                enable_ntuple=dag_escape(bool_string(self.options.enable_ntuple)),
+                enable_ntuple=dag_escape(bool_string(processing_enable_ntuple)),
                 efficiency_ntuple=dag_escape(bool_string(self.options.efficiency_ntuple)),
                 cleanup=dag_escape(bool_string(self.options.cleanup)),
                 request_cpus=dag_escape(request_cpus),
@@ -1215,6 +1533,7 @@ class DAGBuilder:
                 proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
                 proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
                 log_dir=dag_escape(self.options.local_log_dir),
+                log_root=dag_escape(self.options.log_root),
                 local_output_base=dag_escape(self.options.local_output_base),
                 processing_wrapper_path=dag_escape(
                     os.path.join(BASE_DIR, "processing", "condor_wrappers", "run_processing.sh")
@@ -1233,6 +1552,44 @@ class DAGBuilder:
             self.dag_lines.append(f"PARENT {' '.join(parent_jobs)} CHILD {job_name}")
         return job_name
 
+    def add_ntuple_job(self, campaign_name: str, job_index: int, parent_job: str) -> str:
+        campaign = CAMPAIGNS[campaign_name]
+        job_name = f"NTUPLE_{campaign_name}_{job_index}"
+        request_cpus, request_memory, request_disk = self.ntuple_resource_request()
+        miniaod_input = f"{EOS_OUTPUT}/{campaign.name}/{job_index}/output_MINIAOD.root"
+        self.dag_lines.append(f"JOB {job_name} {os.path.join(BASE_DIR, 'processing/templates/ntuple.sub')}")
+        self.dag_lines.append(f"CATEGORY {job_name} ntuple")
+        self.dag_lines.append(
+            "VARS {job} campaign=\"{campaign}\" job_id=\"{job_id}\" "
+            "analysis=\"{analysis}\" max_events=\"{max_events}\" cleanup=\"{cleanup}\" "
+            "efficiency_ntuple=\"{efficiency_ntuple}\" "
+            "miniaod_input=\"{miniaod_input}\" "
+            "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
+            "ntuple_bundle_path=\"{ntuple_bundle_path}\" ntuple_bundle_name=\"{ntuple_bundle_name}\" "
+            "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
+            "log_root=\"{log_root}\"".format(
+                job=job_name,
+                campaign=dag_escape(campaign.name),
+                job_id=dag_escape(job_index),
+                analysis=dag_escape(campaign.analysis_type),
+                max_events=dag_escape(self.options.max_events),
+                cleanup=dag_escape(bool_string(self.options.cleanup)),
+                efficiency_ntuple=dag_escape(bool_string(self.options.efficiency_ntuple)),
+                miniaod_input=dag_escape(miniaod_input),
+                request_cpus=dag_escape(request_cpus),
+                request_memory=dag_escape(request_memory),
+                request_disk=dag_escape(request_disk),
+                ntuple_bundle_path=dag_escape(self.runtime_assets["ntuple_bundle_path"]),
+                ntuple_bundle_name=dag_escape(self.runtime_assets["ntuple_bundle_name"]),
+                proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
+                proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
+                log_root=dag_escape(self.options.log_root),
+            )
+        )
+        self.dag_lines.append(f"RETRY {job_name} 1")
+        self.dag_lines.append(f"PARENT {parent_job} CHILD {job_name}")
+        return job_name
+
     def build(self, campaign_names: Sequence[str], dag_filename: str) -> str:
         dagman_config_path = os.path.join(self.output_dir, "dagman.config")
         processing_jobs: List[str] = []
@@ -1249,6 +1606,13 @@ class DAGBuilder:
             f"CONFIG {dagman_config_path}",
             "",
         ]
+        if self.options.maxjobs_lhe > 0:
+            self.dag_lines.append(f"MAXJOBS lhe {self.options.maxjobs_lhe}")
+        if self.options.maxjobs_processing > 0:
+            self.dag_lines.append(f"MAXJOBS processing {self.options.maxjobs_processing}")
+        if self.options.enable_ntuple and not self.options.machine_env.uses_local_storage and self.options.maxjobs_ntuple > 0:
+            self.dag_lines.append(f"MAXJOBS ntuple {self.options.maxjobs_ntuple}")
+        self.dag_lines.append("")
 
         for pool_name, required_count in self.pool_requirements.items():
             self.ensure_lhe_jobs(pool_name, required_count)
@@ -1260,7 +1624,10 @@ class DAGBuilder:
             if campaign.notes:
                 self.dag_lines.append(f"# 备注: {campaign.notes}")
             for job_index in range(self.options.jobs_per_campaign):
-                processing_jobs.append(self.add_processing_job(campaign_name, job_index))
+                processing_job = self.add_processing_job(campaign_name, job_index)
+                processing_jobs.append(processing_job)
+                if self.options.enable_ntuple and not self.options.machine_env.uses_local_storage:
+                    self.add_ntuple_job(campaign_name, job_index, processing_job)
             self.dag_lines.append("")
 
         if processing_jobs:
@@ -1269,10 +1636,11 @@ class DAGBuilder:
             self.dag_lines.append(
                 "VARS SUMMARY summary_bundle_path=\"{summary_bundle_path}\" "
                 "summary_bundle_name=\"{summary_bundle_name}\" "
-                "log_dir=\"{log_dir}\"".format(
+                "log_dir=\"{log_dir}\" log_root=\"{log_root}\"".format(
                     summary_bundle_path=dag_escape(self.runtime_assets["summary_bundle_path"]),
                     summary_bundle_name=dag_escape(self.runtime_assets["summary_bundle_name"]),
                     log_dir=dag_escape(self.options.local_log_dir),
+                    log_root=dag_escape(self.options.log_root),
                 )
             )
 
@@ -1314,18 +1682,26 @@ class DAGBuilder:
 
 
 def render_dagman_config(options: WorkflowOptions) -> str:
-    return "\n".join(
+    lines = ["# DAGMan 基础配置"]
+    if options.dagman_max_jobs_submitted > 0:
+        lines.append(f"DAGMAN_MAX_JOBS_SUBMITTED = {options.dagman_max_jobs_submitted}")
+    if options.dagman_max_jobs_idle > 0:
+        lines.append(f"DAGMAN_MAX_JOBS_IDLE = {options.dagman_max_jobs_idle}")
+    if options.dagman_max_jobs_submitted > 0 or options.dagman_max_jobs_idle > 0:
+        lines.extend(
+            (
+                "DAGMAN_MAX_SUBMITS_PER_INTERVAL = 20",
+                "DAGMAN_SUBMIT_DELAY = 1",
+            )
+        )
+    lines.extend(
         (
-            "# DAGMan 基础配置",
-            f"DAGMAN_MAX_JOBS_SUBMITTED = {options.dagman_max_jobs_submitted}",
-            f"DAGMAN_MAX_JOBS_IDLE = {options.dagman_max_jobs_idle}",
-            "DAGMAN_MAX_SUBMITS_PER_INTERVAL = 20",
-            "DAGMAN_SUBMIT_DELAY = 1",
             "DAGMAN_SUPPRESS_NOTIFICATION = True",
             "DAGMAN_GENERATE_RESCUE_DAG = True",
             "",
         )
     )
+    return "\n".join(lines)
 
 
 def write_generated_files(
@@ -1400,6 +1776,7 @@ def validate_environment(
     strict_analysis_packages: bool,
     machine_env: Optional[MachineEnv] = None,
     local_output_base: str = "",
+    cmssw15_runtime_tarball: Optional[str] = None,
 ) -> int:
     machine_env = machine_env or MACHINE_ENVS["lxplus_t2_ihep"]
     if machine_env.uses_local_storage and not local_output_base:
@@ -1434,18 +1811,31 @@ def validate_environment(
             exit_code = 1
 
     print("\n包检查:")
-    package_checks = [
-        ("common/packages/helac_package.tar.gz", True),
-        ("common/packages/jjp_code.tar.gz", strict_analysis_packages),
-        ("common/packages/jup_code.tar.gz", strict_analysis_packages),
-    ]
-    for relative_path, required_flag in package_checks:
-        path = os.path.join(BASE_DIR, relative_path)
-        ok = os.path.exists(path)
-        status = "OK" if ok else ("缺失(可选)" if not required_flag else "缺失")
-        print(f"  - {relative_path:<40} {status}")
-        if required_flag and not ok:
+    helac_package_path = os.path.join(BASE_DIR, "common", "packages", "helac_package.tar.gz")
+    helac_ok, helac_status = inspect_helac_package(helac_package_path)
+    print(f"  - {'common/packages/helac_package.tar.gz':<40} {'OK' if helac_ok else '缺失/无效'} ({helac_status})")
+    if not helac_ok:
+        exit_code = 1
+
+    cmssw15_runtime_path: Optional[str] = None
+    cmssw15_runtime_status = "缺失(可选)"
+    try:
+        cmssw15_runtime_path = resolve_cmssw15_runtime_tarball(cmssw15_runtime_tarball)
+        if cmssw15_runtime_path:
+            cmssw15_runtime_status = f"OK ({cmssw15_runtime_path})"
+    except (FileNotFoundError, ValueError) as exc:
+        cmssw15_runtime_status = f"无效: {exc}"
+        if strict_analysis_packages or cmssw15_runtime_tarball:
             exit_code = 1
+
+    print(f"  - {CMSSW15_RUNTIME_TARBALL_NAME:<40} {cmssw15_runtime_status}")
+
+    tpsonia2mumu_ok = os.path.isdir(TPS_ONIA2MUMU_SUBMODULE)
+    tpsonia2mumu_required = strict_analysis_packages and not cmssw15_runtime_path
+    tpsonia2mumu_status = "OK" if tpsonia2mumu_ok else ("缺失(可选)" if not tpsonia2mumu_required else "缺失")
+    print(f"  - {'external/TPS-Onia2MuMu':<40} {tpsonia2mumu_status}")
+    if tpsonia2mumu_required and not tpsonia2mumu_ok:
+        exit_code = 1
 
     print("\n代理检查:")
     proxy_ok, timeleft, proxy_error = check_proxy_valid(proxy_path)
@@ -1493,10 +1883,15 @@ def execute_generation(
     output_dir = os.path.abspath(output_dir)
     if not options.local_log_dir:
         options.local_log_dir = os.path.join(output_dir, "logs")
+    if not options.log_root:
+        options.log_root = options.local_log_dir
     local_output_base = options.local_output_base if options.machine_env.uses_local_storage else ""
+    split_ntuple = options.enable_ntuple and not options.machine_env.uses_local_storage
     if not dry_run:
         ensure_submit_visible_output_dir(output_dir)
         ensure_dir(options.local_log_dir)
+        if options.log_root != options.local_log_dir:
+            ensure_dir(options.log_root)
     pool_requirements = compute_pool_requirements(campaign_names, options.jobs_per_campaign)
     if options.force_generate_lhe:
         existing_pools = OrderedDict(
@@ -1541,8 +1936,16 @@ def execute_generation(
             "proxy_bundle_path": "<dry-run>/proxy_bundle.tar.gz",
             "proxy_bundle_name": BUNDLE_NAMES["proxy"],
         }
+        if split_ntuple:
+            runtime_assets["ntuple_bundle_path"] = "<dry-run>/ntuple_runtime_bundle.tar.gz"
+            runtime_assets["ntuple_bundle_name"] = BUNDLE_NAMES["ntuple"]
     else:
-        runtime_assets = prepare_runtime_assets(output_dir)
+        runtime_assets = prepare_runtime_assets(
+            output_dir,
+            require_analysis_package=options.enable_ntuple,
+            cmssw15_runtime_tarball=options.cmssw15_runtime_tarball,
+            include_ntuple_in_processing=options.enable_ntuple and not split_ntuple,
+        )
         proxy_bundle_path, proxy_bundle_name = build_proxy_bundle(output_dir, options.proxy_path)
         runtime_assets["proxy_bundle_path"] = proxy_bundle_path
         runtime_assets["proxy_bundle_name"] = proxy_bundle_name
@@ -1585,11 +1988,200 @@ def execute_generation(
     return 0
 
 
-def execute_prepare_runtime(output_dir: str, proxy_path: str, machine_env: Optional[MachineEnv] = None) -> int:
+def execute_helac_matrix_generation(
+    output_dir: str,
+    dag_filename: str,
+    proxy_path: str,
+    seed_base: int,
+    stageout_dir: str,
+    lhe_unwevt: int,
+    test_mode: bool,
+    dagman_max_jobs_submitted: int,
+    dagman_max_jobs_idle: int,
+    log_root: str,
+    maxjobs_lhe: int,
+    dry_run: bool,
+) -> int:
+    output_dir = os.path.abspath(output_dir)
+    log_root = os.path.abspath(log_root)
+    if seed_base <= 10 or seed_base + (len(HELAC_MATRIX_STATES) ** 2 * 2) >= 100000:
+        raise ValueError("seed-base must leave all 162 HELAC matrix seeds between 11 and 99999")
+    if lhe_unwevt <= 0:
+        raise ValueError("--lhe-unwevt must be positive")
+    if not dry_run:
+        ensure_submit_visible_output_dir(output_dir)
+        helac_package_path = os.path.join(BASE_DIR, "common", "packages", "helac_package.tar.gz")
+        helac_ok, helac_status = inspect_helac_package(helac_package_path)
+        if not helac_ok:
+            raise FileNotFoundError(
+                "common/packages/helac_package.tar.gz is required for HELAC matrix jobs "
+                f"and is not usable: {helac_status}"
+            )
+
+    resource_options = WorkflowOptions(
+        jobs_per_campaign=1,
+        max_events=-1,
+        enable_ntuple=False,
+        efficiency_ntuple=False,
+        cleanup=True,
+        test_mode=test_mode,
+        scan_existing=False,
+        force_generate_lhe=True,
+        proxy_path=proxy_path,
+        lhe_unwevt=lhe_unwevt,
+        dagman_max_jobs_submitted=dagman_max_jobs_submitted,
+        dagman_max_jobs_idle=dagman_max_jobs_idle,
+        log_root=log_root,
+        maxjobs_lhe=maxjobs_lhe,
+        maxjobs_processing=0,
+        maxjobs_ntuple=0,
+        cmssw15_runtime_tarball=None,
+    )
+    request_cpus, request_memory, request_disk = DAGBuilder(
+        output_dir=output_dir,
+        options=resource_options,
+        existing_pools={},
+        pool_requirements={},
+        runtime_assets={},
+    ).lhe_resource_request()
+
+    if dry_run:
+        runtime_assets = {
+            "lhe_bundle_path": "<dry-run>/lhe_runtime_bundle.tar.gz",
+            "lhe_bundle_name": BUNDLE_NAMES["lhe"],
+            "proxy_bundle_path": "<dry-run>/proxy_bundle.tar.gz",
+            "proxy_bundle_name": BUNDLE_NAMES["proxy"],
+        }
+    else:
+        ensure_dir(log_root)
+        runtime_assets = prepare_runtime_assets(output_dir, require_analysis_package=False)
+        proxy_bundle_path, proxy_bundle_name = build_proxy_bundle(output_dir, proxy_path)
+        runtime_assets["proxy_bundle_path"] = proxy_bundle_path
+        runtime_assets["proxy_bundle_name"] = proxy_bundle_name
+
+    dagman_config_path = os.path.join(output_dir, "dagman.config")
+    submit_template = os.path.join(BASE_DIR, "processing", "templates", "helac_matrix.sub")
+    matrix_jobs = list(iter_helac_matrix_jobs(seed_base))
+    dag_lines = [
+        "# ================================================",
+        "# HELAC-Onia J/psi + Upsilon Fock-state matrix DAG",
+        f"# 生成时间: {datetime.now().isoformat()}",
+        f"# Jobs: {len(matrix_jobs)}",
+        f"# Stageout: {display_remote_target(stageout_dir)}",
+        f"# 测试模式: {bool_string(test_mode)}",
+        "# ================================================",
+        "",
+        f"CONFIG {dagman_config_path}",
+        "",
+    ]
+    if maxjobs_lhe > 0:
+        dag_lines.extend([f"MAXJOBS lhe {maxjobs_lhe}", ""])
+    else:
+        dag_lines.append("")
+
+    for job in matrix_jobs:
+        dag_lines.append(
+            "# {process}; cmass={cmass:.5f}, bmass={bmass:.5f}".format(
+                process=job["process"],
+                cmass=job["cmass"],
+                bmass=job["bmass"],
+            )
+        )
+        dag_lines.append(f"JOB {job['job_name']} {submit_template}")
+        dag_lines.append(f"CATEGORY {job['job_name']} lhe")
+        dag_lines.append(
+            "VARS {job_name} charm_state=\"{charm_state}\" bottom_state=\"{bottom_state}\" "
+            "extra_gluon=\"{extra_gluon}\" job_slug=\"{job_slug}\" seed=\"{seed}\" "
+            "stageout_dir=\"{stageout_dir}\" min_pt_conia=\"6.0\" min_pt_bonia=\"4.0\" "
+            "min_pt_q=\"0.0\" unwevt=\"{unwevt}\" test_mode=\"{test_mode}\" "
+            "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
+            "lhe_bundle_path=\"{lhe_bundle_path}\" lhe_bundle_name=\"{lhe_bundle_name}\" "
+            "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
+            "log_root=\"{log_root}\"".format(
+                job_name=job["job_name"],
+                charm_state=dag_escape(job["charm_state"]),
+                bottom_state=dag_escape(job["bottom_state"]),
+                extra_gluon=dag_escape(bool_string(bool(job["extra_gluon"]))),
+                job_slug=dag_escape(job["slug"]),
+                seed=dag_escape(job["seed"]),
+                stageout_dir=dag_escape(stageout_dir.rstrip("/")),
+                unwevt=dag_escape(lhe_unwevt),
+                test_mode=dag_escape(bool_string(test_mode)),
+                request_cpus=dag_escape(request_cpus),
+                request_memory=dag_escape(request_memory),
+                request_disk=dag_escape(request_disk),
+                lhe_bundle_path=dag_escape(runtime_assets["lhe_bundle_path"]),
+                lhe_bundle_name=dag_escape(runtime_assets["lhe_bundle_name"]),
+                proxy_bundle_path=dag_escape(runtime_assets["proxy_bundle_path"]),
+                proxy_bundle_name=dag_escape(runtime_assets["proxy_bundle_name"]),
+                log_root=dag_escape(log_root),
+            )
+        )
+        dag_lines.append(f"RETRY {job['job_name']} 2")
+        dag_lines.append("")
+
+    metadata = OrderedDict(
+        [
+            ("created_at", datetime.now().isoformat()),
+            ("dag_path", os.path.join(output_dir, dag_filename)),
+            ("dagman_config_path", dagman_config_path),
+            (
+                "options",
+                OrderedDict(
+                    [
+                        ("seed_base", seed_base),
+                        ("stageout_dir", stageout_dir.rstrip("/")),
+                        ("lhe_unwevt", lhe_unwevt),
+                        ("test_mode", test_mode),
+                        ("dagman_max_jobs_submitted", dagman_max_jobs_submitted),
+                        ("dagman_max_jobs_idle", dagman_max_jobs_idle),
+                        ("log_root", log_root),
+                        ("maxjobs_lhe", maxjobs_lhe),
+                    ]
+                ),
+            ),
+            ("runtime_assets", runtime_assets),
+            ("jobs", matrix_jobs),
+        ]
+    )
+    dag_content = "\n".join(dag_lines)
+
+    if dry_run:
+        print(dag_content)
+        return 0
+
+    dag_path, config_path, metadata_path = write_generated_files(
+        output_dir=output_dir,
+        dag_filename=dag_filename,
+        dag_content=dag_content,
+        dagman_config_content=render_dagman_config(resource_options),
+        metadata=metadata,
+    )
+    print("HELAC matrix DAG 生成完成")
+    print(f"  - DAG: {dag_path}")
+    print(f"  - DAGMan 配置: {config_path}")
+    print(f"  - 元数据: {metadata_path}")
+    print(f"  - 作业数: {len(matrix_jobs)}")
+    print(f"  - 提交命令: condor_submit_dag {dag_path}")
+    return 0
+
+
+def execute_prepare_runtime(
+    output_dir: str,
+    proxy_path: str,
+    machine_env: Optional[MachineEnv] = None,
+    include_ntuple: bool = False,
+    cmssw15_runtime_tarball: Optional[str] = None,
+) -> int:
     machine_env = machine_env or MACHINE_ENVS["lxplus_t2_ihep"]
     output_dir = os.path.abspath(output_dir)
     ensure_submit_visible_output_dir(output_dir)
-    runtime_assets = prepare_runtime_assets(output_dir)
+    runtime_assets = prepare_runtime_assets(
+        output_dir,
+        require_analysis_package=include_ntuple,
+        cmssw15_runtime_tarball=cmssw15_runtime_tarball,
+        include_ntuple_in_processing=include_ntuple and machine_env.uses_local_storage,
+    )
     proxy_bundle_path, proxy_bundle_name = build_proxy_bundle(output_dir, proxy_path)
     runtime_assets["proxy_bundle_path"] = proxy_bundle_path
     runtime_assets["proxy_bundle_name"] = proxy_bundle_name
@@ -1743,12 +2335,43 @@ def add_common_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--local-log-dir",
         default="",
-        help="本地 HTCondor 日志目录；hepthu 默认使用 output-dir/logs。",
+        help="本地 HTCondor 日志目录；未指定时使用 machine-env/log-root 默认值。",
+    )
+    parser.add_argument(
+        "--log-root",
+        default="",
+        help="HTCondor stdout/stderr/event log 输出目录；未指定时使用 --local-log-dir 或 machine-env 默认。",
     )
     parser.add_argument(
         "--local-output-base",
         default="",
         help="本地输出基础目录；hepthu 默认使用 ~/MC_Production_result。",
+    )
+    parser.add_argument(
+        "--maxjobs-lhe",
+        type=int,
+        default=20,
+        help="DAGMan LHE category throttle。",
+    )
+    parser.add_argument(
+        "--maxjobs-processing",
+        type=int,
+        default=50,
+        help="DAGMan MiniAOD/processing category throttle。",
+    )
+    parser.add_argument(
+        "--maxjobs-ntuple",
+        type=int,
+        default=30,
+        help="DAGMan ntuple category throttle。",
+    )
+    parser.add_argument(
+        "--cmssw15-runtime-tarball",
+        default=None,
+        help=(
+            "预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball；"
+            "默认查找 common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz。"
+        ),
     )
     parser.add_argument("--hepjob-group", default="cms", help="machine-env=ihep 时传给 hep_sub 的组名。")
     parser.add_argument(
@@ -1800,7 +2423,15 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument(
         "--strict-analysis-packages",
         action="store_true",
-        help="把 jjp/jup 分析包也当作硬依赖。",
+        help="要求 ntuple runtime 可用：预编译 CMSSW15 tarball 或 TPS-Onia2MuMu submodule。",
+    )
+    validate_parser.add_argument(
+        "--cmssw15-runtime-tarball",
+        default=None,
+        help=(
+            "预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball；"
+            "存在且有效时可替代 ntuple source submodule。"
+        ),
     )
     validate_parser.add_argument(
         "--local-output-base",
@@ -1820,6 +2451,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--proxy-path",
         default=detect_proxy_path(),
         help="要一起打包到 worker 的代理路径。",
+    )
+    runtime_parser.add_argument(
+        "--include-ntuple",
+        action="store_true",
+        help="同时生成 ntuple runtime bundle。",
+    )
+    runtime_parser.add_argument(
+        "--cmssw15-runtime-tarball",
+        default=None,
+        help=(
+            "预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball；"
+            "默认查找 common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz。"
+        ),
     )
 
     generate_parser = subparsers.add_parser("generate", help="生成正式 DAG")
@@ -1846,6 +2490,69 @@ def build_parser() -> argparse.ArgumentParser:
         test_mode=True,
     )
 
+    matrix_parser = subparsers.add_parser(
+        "generate-helac-matrix",
+        help="生成 HELAC-only J/psi+Upsilon Fock-state matrix DAG",
+    )
+    matrix_parser.add_argument(
+        "--output-dir",
+        default=os.path.join(DEFAULT_OUTPUT_DIR, "helac_matrix"),
+        help="输出目录。",
+    )
+    matrix_parser.add_argument("--output", default="helac_matrix.dag", help="输出 DAG 文件名。")
+    matrix_parser.add_argument(
+        "--proxy-path",
+        default=detect_proxy_path(),
+        help="X509 代理路径；默认自动探测。",
+    )
+    matrix_parser.add_argument(
+        "--seed-base",
+        type=int,
+        default=92000,
+        help="162 个 HELAC matrix job 的起始 seed。",
+    )
+    matrix_parser.add_argument(
+        "--stageout-dir",
+        default=HELAC_MATRIX_STAGEOUT_DIR,
+        help="远端输出目录；支持 root:// URL、/eos/...、/store/... 或 T2 相对目录。",
+    )
+    matrix_parser.add_argument(
+        "--lhe-unwevt",
+        type=int,
+        default=100000,
+        help="每个 HELAC matrix job 的 unwevt。",
+    )
+    matrix_parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        default=False,
+        help="把 HELAC matrix job 切到 fast-test 积分设置。",
+    )
+    matrix_parser.add_argument(
+        "--dagman-max-jobs-submitted",
+        type=int,
+        default=0,
+        help="DAGMan 允许同时提交/运行的最大节点数；0 表示不写该限流配置。",
+    )
+    matrix_parser.add_argument(
+        "--dagman-max-jobs-idle",
+        type=int,
+        default=0,
+        help="DAGMan 允许同时处于 idle 状态的最大节点数；0 表示不写该限流配置。",
+    )
+    matrix_parser.add_argument(
+        "--log-root",
+        default=DEFAULT_LOG_ROOT,
+        help="HTCondor stdout/stderr/event log 输出目录。",
+    )
+    matrix_parser.add_argument(
+        "--maxjobs-lhe",
+        type=int,
+        default=0,
+        help="DAGMan HELAC matrix category throttle；0 表示不写 MAXJOBS 限流。",
+    )
+    matrix_parser.add_argument("--dry-run", action="store_true", help="只打印 DAG，不写文件。")
+
     return parser
 
 
@@ -1860,7 +2567,14 @@ def normalize_args(argv: Sequence[str]) -> Sequence[str]:
     if len(argv) <= 1:
         return argv
 
-    if argv[1] in {"list", "validate", "prepare-runtime", "generate", "generate-test"}:
+    if argv[1] in {
+        "list",
+        "validate",
+        "prepare-runtime",
+        "generate",
+        "generate-test",
+        "generate-helac-matrix",
+    }:
         return argv
 
     if "--list-campaigns" in argv[1:]:
@@ -1899,6 +2613,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             strict_analysis_packages=args.strict_analysis_packages,
             machine_env=machine_env,
             local_output_base=local_output_base,
+            cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
         )
 
     if args.command == "prepare-runtime":
@@ -1907,7 +2622,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             output_dir=args.output_dir,
             proxy_path=args.proxy_path,
             machine_env=machine_env,
+            include_ntuple=args.include_ntuple,
+            cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
         )
+
+    if args.command == "generate-helac-matrix":
+        try:
+            return execute_helac_matrix_generation(
+                output_dir=args.output_dir,
+                dag_filename=args.output,
+                proxy_path=args.proxy_path,
+                seed_base=args.seed_base,
+                stageout_dir=args.stageout_dir,
+                lhe_unwevt=args.lhe_unwevt,
+                test_mode=args.test_mode,
+                dagman_max_jobs_submitted=args.dagman_max_jobs_submitted,
+                dagman_max_jobs_idle=args.dagman_max_jobs_idle,
+                log_root=args.log_root,
+                maxjobs_lhe=args.maxjobs_lhe,
+                dry_run=args.dry_run,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     if args.command in {"generate", "generate-test"}:
         machine_env = resolve_machine_env(args.machine_env)
@@ -1940,6 +2677,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             machine_env=machine_env,
             local_log_dir=args.local_log_dir,
             local_output_base=local_output_base,
+            log_root=os.path.abspath(args.log_root) if args.log_root else "",
+            maxjobs_lhe=args.maxjobs_lhe,
+            maxjobs_processing=args.maxjobs_processing,
+            maxjobs_ntuple=args.maxjobs_ntuple,
+            cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
         )
         return execute_generation(
             campaign_names=campaign_names,

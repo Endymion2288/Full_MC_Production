@@ -1,0 +1,43 @@
+# ==============================================================================
+# ntuple.sub - CMSSW15 TPS-Onia2MuMu ntuple node submit template
+# ==============================================================================
+# Variables injected by dag_generator.py:
+#   campaign / job_id / analysis / max_events / cleanup / efficiency_ntuple / miniaod_input
+#   request_cpus / request_memory / request_disk
+#   ntuple_bundle_path / ntuple_bundle_name / proxy_bundle_path / proxy_bundle_name
+#   log_root
+# ==============================================================================
+
+Universe = vanilla
+
+Executable = /bin/bash
+transfer_executable = False
+Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(ntuple_bundle_name); cd runtime/processing; bash run_chain.sh --inputs file:/dev/null --modes normal --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events $(max_events) --enable-ntuple true --efficiency-ntuple $(efficiency_ntuple) --cleanup $(cleanup) --skip-to ntuple --miniaod-input $(miniaod_input) --transfer-miniaod false'"
+
+Should_Transfer_Files = YES
+WhenToTransferOutput = ON_EXIT
+
+Transfer_Input_Files = $(ntuple_bundle_path), $(proxy_bundle_path)
+
+transfer_output_files =
+
+Output = $(log_root)/ntuple_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error  = $(log_root)/ntuple_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log    = $(log_root)/ntuple_$(campaign)_$(job_id)_$(Cluster).log
+
+request_cpus = $(request_cpus)
+request_memory = $(request_memory)
+request_disk = $(request_disk)
+
++MaxRuntime = 604800
+
+Environment = "HOME=/srv"
+
++SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
+
+OnExitHold = (ExitCode != 0)
+OnExitHoldReason = "Ntuple chain failed"
+OnExitHoldSubCode = 1
+PeriodicRelease = (JobRunCount < 2) && (HoldReasonCode == 3)
+
+Queue 1

@@ -1,117 +1,98 @@
 # Package Preparation Guide
 # =========================
 
-This directory should contain the following tar packages for worker node deployment:
+This directory should contain the tarballs transferred to worker nodes.
 
-## 1. helac_package.tar.gz (Required for LHE generation)
+## 1. `helac_package.tar.gz` (required)
 
-This package now ships the source tarballs only. `run_helac.sh` will unpack and
-build HepMC and HELAC-Onia inside the worker sandbox.
+`run_helac.sh` accepts either source tarballs or a prebuilt HELAC-Onia runtime.
+When a compiled `HELAC-Onia-2.7.6/ho_cluster` is present, the worker reuses it
+and normalizes known generated absolute symlinks before running.
+The same package is used by `dag_generator.py generate-helac-matrix` for the
+162-job J/psi+Upsilon Fock-state HELAC-only scan.
 
-### Contents:
-- HELAC-Onia-2.7.6.tar.gz (source)
-- hepmc2.06.11.tgz (source)
+Contents:
+- `HELAC-Onia-2.7.6.tar.gz`
+- `hepmc2.06.11.tgz`
 
-### How to create:
+Create it with:
 
 ```bash
 cd /afs/cern.ch/user/x/xcheng/condor/HELAC-on-HTCondor
-
-# Make sure the source tarballs are present under sources/
 cp sources/HELAC-Onia-2.7.6.tar.gz .
 cp sources/hepmc2.06.11.tgz .
-
-# Create the package (source-only)
 tar -czf helac_package.tar.gz HELAC-Onia-2.7.6.tar.gz hepmc2.06.11.tgz
-
-# Copy to packages directory
-cp helac_package.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/Full_MC_Production/common/packages/
+cp helac_package.tar.gz /afs/cern.ch/user/c/chiw/condor/Full_MC_Production/common/packages/
 ```
 
----
+## 2. `tpsonia2mumu_code.tar.gz` (generated automatically)
 
-## 2. jjp_code.tar.gz (Required for JJP Ntuple production)
+The ntuple stage now uses one shared CMSSW 15 package for both `JJP` and `JUP`:
+- package path inside CMSSW: `src/HeavyFlavorAnalysis/TPS-Onia2MuMu`
+- runtime configs are repo-owned under `common/cmssw_configs/`
+- `JJP -> common/cmssw_configs/ntuple_jjp_cfg.py`
+- `JUP -> common/cmssw_configs/ntuple_jup_cfg.py`
+- JJP efficiency/acceptance -> `common/cmssw_configs/ntuple_jjp_efficiency_cfg.py`
 
-This package contains the current CMSSW code for J/psi + J/psi + phi analysis.
-`run_chain.sh` will unpack and compile it inside a fresh CMSSW_15_0_15 project on the worker.
+The wrapper passes only changing runtime values to `cmsRun`
+(`inputFiles`, `outputFile`, `runOnMC`, `maxEvents`). Persistent analyzer choices
+such as `analysisMode`, `DoMonteCarloTree`, and
+`RequireAcceptedCandidatesForMonteCarloTree` belong in the CMSSW config files.
+The current general-purpose default is
+`RequireAcceptedCandidatesForMonteCarloTree=False`.
 
-### Contents:
-- `JJPNtupleMaker/TPS_Onia2MuMu/`
-- `JJPNtupleMaker/TPS_Onia2MuMu/test/ConfFile_cfg.py` must be present
+The maintained source now lives in this repo as a git submodule:
+- submodule path: `external/TPS-Onia2MuMu`
+- upstream URL: `git@github.com:Eric100911/TPS-Onia2MuMu.git`
+- current pinned gitlink should be treated as the package baseline
 
-### How to create:
+Initialize or refresh it with:
 
 ```bash
-cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_15_0_15/src
-
-# Create package with analysis code (strip git and caches)
-tar --exclude='.git' --exclude='*.root' -czf jjp_code.tar.gz JJPNtupleMaker/TPS_Onia2MuMu/
-
-# Copy to packages directory
-cp jjp_code.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common/packages/
+git submodule update --init --recursive
 ```
 
----
+When no prebuilt CMSSW15 runtime is available, `dag_generator.py generate
+--enable-ntuple`, `generate-test --enable-ntuple`, and `prepare-runtime
+--include-ntuple` build `tpsonia2mumu_code.tar.gz` from the submodule
+automatically and insert it into the ntuple runtime bundle. No manual copy into
+`common/packages/` is needed.
 
-## 3. jup_code.tar.gz (Required for JUP Ntuple production)
+For `hepthu` local-storage DAGs the ntuple payload may be inserted into the
+processing runtime bundle so the ntuple can run inline with the local MiniAOD.
+For lxplus/T2 DAGs it is kept in a separate ntuple runtime bundle.
 
-This package contains the current CMSSW code for J/psi + Upsilon + phi analysis.
-`run_chain.sh` will unpack and compile it inside a fresh CMSSW_15_0_15 project on the worker.
+## 3. `cmssw15_tpsonia2mumu_runtime.tar.gz` (optional, preferred)
 
-### Contents:
-- `JUPNtupleMaker/TPS_Onia2MuMu/`
-- `JUPNtupleMaker/TPS_Onia2MuMu/test/ConfFile_cfg.py` must be present
+For ntuple production, place a prebuilt CMSSW 15 project tarball here or pass it
+with `--cmssw15-runtime-tarball`. It should contain `CMSSW_15_0_15/` at archive
+root. Worker jobs unpack it, run `scram build ProjectRename`, and skip the
+per-job `scram b HeavyFlavorAnalysis/TPS-Onia2MuMu` rebuild.
 
-### How to create:
+The generator validates this contract before packaging. At minimum the archive
+must contain:
 
-```bash
-cd /afs/cern.ch/user/x/xcheng/condor/CMSSW_15_0_15/src
+- `CMSSW_15_0_15/src/`
+- `CMSSW_15_0_15/src/HeavyFlavorAnalysis/TPS-Onia2MuMu/`
+- `CMSSW_15_0_15/src/HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py`
 
-# Create package with analysis code (strip git and caches)
-tar --exclude='.git' --exclude='*.root' -czf jup_code.tar.gz JUPNtupleMaker/TPS_Onia2MuMu/
-
-# Copy to packages directory
-cp jup_code.tar.gz /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common/packages/
-```
-
----
-
-## Package Verification
-
-After creating packages, verify their contents:
+## Verification
 
 ```bash
-cd /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/common/packages
-
-# List package contents
+cd /afs/cern.ch/user/c/chiw/condor/Full_MC_Production/common/packages
 tar -tzf helac_package.tar.gz | head -20
-tar -tzf jjp_code.tar.gz | head -20
-tar -tzf jup_code.tar.gz | head -20
-
-# Check sizes
 ls -lh *.tar.gz
 ```
 
-Expected sizes (approx):
-- helac_package.tar.gz: ~50-70 MB
-- jjp_code.tar.gz: ~10-12 MB
-- jup_code.tar.gz: ~1-2 MB
-
----
+Checks:
+- runtime generation should produce `tpsonia2mumu_code.tar.gz` under the selected DAG output directory
+- the archive must contain `HeavyFlavorAnalysis/TPS-Onia2MuMu/`
+- source-package fallback worker build target is `scram b -j 4 HeavyFlavorAnalysis/TPS-Onia2MuMu`
+- prebuilt CMSSW15 worker relocation target is `scram build ProjectRename`
+- ntuple tests on this branch should be run in `CMSSW_15_0_15`
 
 ## Notes
 
-1. **HELAC-Onia Patches**: The helac_package should include any patches you've applied. 
-   Check the `patch/` directory in HELAC-on-HTCondor for modifications. The build now
-   happens on the worker node via `run_helac.sh`.
-
-2. **CMSSW Version Compatibility**: 
-   - JJP/JUP codes are designed for CMSSW_15_0_15
-   - GEN-SIM chain uses CMSSW_12_4_14
-
-3. **Updating Packages**: When you update the analysis code, remember to rebuild
-   the corresponding tar.gz file and test on a worker node before large-scale submission.
-
-4. **Storage Considerations**: These packages are transferred to worker nodes.
-   Keep them as small as possible by excluding build artifacts and unnecessary files.
-   `processing.sub` already transfers `common/`, so all three tarballs travel with jobs.
+1. `helac_package.tar.gz` remains the only hard dependency for LHE-only and MiniAOD-only smoke tests.
+2. The submodule becomes required for `--enable-ntuple` only when no prebuilt CMSSW15 runtime is provided.
+3. Keep the package small by excluding `.git`, CRAB work areas, ROOT outputs, and local caches.

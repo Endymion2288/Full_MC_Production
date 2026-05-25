@@ -1,6 +1,7 @@
 # ==============================================================================
 # ntuple_jjp_cfg.py - Ntuple configuration for JJP (J/psi + J/psi + phi) analysis
 # ==============================================================================
+# Repo-owned config used by the production wrapper for JpsiJpsiPhi ntuples.
 # Based on TPS-Onia2MuMu-Dev-J-J-P branch
 # Reads MiniAOD and produces flat ntuple for physics analysis
 #
@@ -26,22 +27,13 @@ ivars.register('runOnMC',
                VarParsing.VarParsing.varType.bool,
                "Run on MC (True) or Data (False)")
 
-ivars.register('doMonteCarloTree',
-               False,
-               VarParsing.VarParsing.multiplicity.singleton,
-               VarParsing.VarParsing.varType.bool,
-               "Write MC truth tree branches")
-
-ivars.register('requireAcceptedCandidatesForMonteCarloTree',
-               True,
-               VarParsing.VarParsing.multiplicity.singleton,
-               VarParsing.VarParsing.varType.bool,
-               "Require accepted reconstructed candidates before writing MC tree entries")
-
 ivars.maxEvents = -1
 ivars.parseArguments()
 
 # Configuration flags
+ANALYSIS_MODE = 'JpsiJpsiPhi'
+DO_MONTE_CARLO_TREE = False
+REQUIRE_ACCEPTED_CANDIDATES_FOR_MONTE_CARLO_TREE = False
 AddCaloMuon = False
 runOnMC = ivars.runOnMC
 HIFormat = False
@@ -144,12 +136,13 @@ from PhysicsTools.PatAlgos.tools.trackTools import *
 
 # MultiLepPAT analyzer (J/psi + J/psi + phi)
 process.mkcands = cms.EDAnalyzer('MultiLepPAT',
+        analysisMode = cms.untracked.string(ANALYSIS_MODE),
         HLTriggerResults = cms.untracked.InputTag("TriggerResults","","HLT"),
         inputGEN  = cms.untracked.InputTag("genParticles"),
         VtxSample   = cms.untracked.string('offlineSlimmedPrimaryVertices'),
         DoJPsiMassConstraint = cms.untracked.bool(True),
-        DoMonteCarloTree = cms.untracked.bool(ivars.doMonteCarloTree),
-        RequireAcceptedCandidatesForMonteCarloTree = cms.untracked.bool(ivars.requireAcceptedCandidatesForMonteCarloTree),
+        DoMonteCarloTree = cms.untracked.bool(DO_MONTE_CARLO_TREE),
+        RequireAcceptedCandidatesForMonteCarloTree = cms.untracked.bool(REQUIRE_ACCEPTED_CANDIDATES_FOR_MONTE_CARLO_TREE),
         MonteCarloParticleId = cms.untracked.int32(20443),
         trackQualities = cms.untracked.vstring('loose','tight','highPurity'),
         MinNumMuPixHits = cms.untracked.int32(1),
