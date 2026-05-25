@@ -29,6 +29,7 @@ from dag_generator import (
     POOL_DAG_LABELS,
     build_bundle,
     build_proxy_bundle,
+    build_ntuple_manifest,
     canonical_mode,
     compute_pool_requirements,
     detect_proxy_path,
@@ -38,6 +39,8 @@ from dag_generator import (
     prepare_runtime_assets,
     real_pool_names,
     scan_existing_pools,
+    validate_efficiency_campaigns,
+    write_ntuple_manifest,
 )
 
 WORKFS2_BASE = "/workfs2/cms/chengxing/Full_MC_Production"
@@ -175,6 +178,7 @@ def generate_processing_job_script(
     n_sources: int,
     max_events: int,
     enable_ntuple: bool,
+    efficiency_ntuple: bool,
     cleanup: bool,
     bundle_dir: str,
     proc_bundle_name: str,
@@ -185,6 +189,7 @@ def generate_processing_job_script(
     """
 
     enable_ntuple_str = bool_str(enable_ntuple)
+    efficiency_ntuple_str = bool_str(efficiency_ntuple)
     cleanup_str = bool_str(cleanup)
     work_dir = f"{bundle_dir}/proc_{campaign_name}_{job_index}"
     proxy_path = f"{work_dir}/credentials/x509_user_proxy"
@@ -197,6 +202,7 @@ def generate_processing_job_script(
         analysis=analysis,
         max_events=max_events,
         enable_ntuple_str=enable_ntuple_str,
+        efficiency_ntuple_str=efficiency_ntuple_str,
         cleanup_str=cleanup_str,
         bundle_dir=bundle_dir,
         proc_bundle_name=proc_bundle_name,
@@ -245,6 +251,7 @@ bash run_chain.sh \\
     --job-id {job_index} \\
     --max-events {max_events} \\
     --enable-ntuple {enable_ntuple_str} \\
+    --efficiency-ntuple {efficiency_ntuple_str} \\
     --cleanup {cleanup_str}
 EC=\$?
 rm -rf "\${{WORKDIR}}" 2>/dev/null || true
@@ -469,6 +476,7 @@ class HepJobBuilder:
         jobs_per_campaign: int,
         max_events: int,
         enable_ntuple: bool,
+        efficiency_ntuple: bool,
         cleanup: bool,
         test_mode: bool,
         scan_existing: bool,
@@ -482,6 +490,7 @@ class HepJobBuilder:
         self.jobs_per_campaign = jobs_per_campaign
         self.max_events = max_events
         self.enable_ntuple = enable_ntuple
+        self.efficiency_ntuple = efficiency_ntuple
         self.cleanup = cleanup
         self.test_mode = test_mode
         self.scan_existing = scan_existing
@@ -594,7 +603,7 @@ class HepJobBuilder:
                     campaign_name, job_index,
                     inputs, modes, campaign.analysis_type,
                     campaign.n_sources, self.max_events,
-                    self.enable_ntuple, self.cleanup,
+                    self.enable_ntuple, self.efficiency_ntuple, self.cleanup,
                     self.bundle_dir, proc_bundle_name, proxy_bundle_name,
                 )
                 write_job_script(script_path, content)
@@ -640,7 +649,15 @@ class HepJobBuilder:
             ("campaigns", list(campaign_names)),
             ("jobs_per_campaign", self.jobs_per_campaign),
             ("max_events", self.max_events),
+            ("enable_ntuple", self.enable_ntuple),
+            ("efficiency_ntuple", self.efficiency_ntuple),
             ("test_mode", self.test_mode),
+            (
+                "ntuple_manifest",
+                build_ntuple_manifest(campaign_names, self.jobs_per_campaign)
+                if self.efficiency_ntuple
+                else OrderedDict(),
+            ),
             ("lhe_jobs", self.lhe_jobs_info),
             ("processing_jobs", self.proc_jobs_info),
             ("bundle_dir", self.bundle_dir),
@@ -650,6 +667,12 @@ class HepJobBuilder:
         with open(metadata_path, "w", encoding="utf-8") as handle:
             json.dump(self.metadata, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
+
+        if self.efficiency_ntuple:
+            write_ntuple_manifest(
+                self.output_dir,
+                build_ntuple_manifest(campaign_names, self.jobs_per_campaign),
+            )
 
         return orchestrator_path, submit_lhe_path, submit_proc_path
 
@@ -685,6 +708,10 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument(
         "--disable-ntuple", dest="enable_ntuple", action="store_false",
         help="跳过 Ntuple，仅到 MiniAOD。",
+    )
+    generate_parser.add_argument(
+        "--efficiency-ntuple", action="store_true",
+        help="生成 multileppat 效率/acceptance 可用的 JJP full-GEN truth ntuple，并写出 ntuple manifest。",
     )
     generate_parser.add_argument(
         "--cleanup", dest="cleanup", action="store_true", default=True,
@@ -727,6 +754,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="输出目录（默认: 自动生成时间戳目录）。",
     )
     test_parser.add_argument("--max-events", type=int, default=5, help="每个 job 的事件数。")
+    test_parser.add_argument(
+        "--enable-ntuple", dest="enable_ntuple", action="store_true", default=False,
+        help="测试 workflow 中启用 Ntuple 步骤。",
+    )
+    test_parser.add_argument(
+        "--disable-ntuple", dest="enable_ntuple", action="store_false",
+        help="测试 workflow 中跳过 Ntuple 步骤。",
+    )
+    test_parser.add_argument(
+        "--efficiency-ntuple", action="store_true",
+        help="生成 multileppat 效率/acceptance 可用的 JJP full-GEN truth ntuple，并写出 ntuple manifest。",
+    )
     test_parser.add_argument("--proxy-path", default=detect_proxy_path(), help="代理路径。")
     test_parser.add_argument("--group", default="cms", help="HepJob 组名。")
 
@@ -749,6 +788,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         jobs_per_campaign = args.jobs
         max_events = args.max_events
         enable_ntuple = args.enable_ntuple if hasattr(args, "enable_ntuple") else False
+        efficiency_ntuple = args.efficiency_ntuple if hasattr(args, "efficiency_ntuple") else False
+        if efficiency_ntuple:
+            try:
+                validate_efficiency_campaigns(campaign_names)
+            except ValueError as exc:
+                parser.error(str(exc))
+            enable_ntuple = True
         cleanup = args.cleanup if hasattr(args, "cleanup") else True
         test_mode = (args.command == "generate-test")
         scan_existing = args.scan_existing if hasattr(args, "scan_existing") else True
@@ -761,6 +807,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Campaigns: {', '.join(campaign_names)}")
         print(f"每个 campaign job 数: {jobs_per_campaign}")
         print(f"每 job 事件数: {max_events}")
+        print(f"Ntuple: {enable_ntuple}")
+        print(f"Efficiency ntuple: {efficiency_ntuple}")
         print(f"测试模式: {test_mode}")
         print(f"输出目录: {output_dir}")
         print()
@@ -770,6 +818,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             jobs_per_campaign=jobs_per_campaign,
             max_events=max_events,
             enable_ntuple=enable_ntuple,
+            efficiency_ntuple=efficiency_ntuple,
             cleanup=cleanup,
             test_mode=test_mode,
             scan_existing=scan_existing,
@@ -790,6 +839,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"作业脚本: {builder.scripts_dir}/")
         print(f"日志目录: {builder.logs_dir}/")
         print(f"元数据: {os.path.join(output_dir, 'metadata.json')}")
+        if efficiency_ntuple:
+            print(f"Ntuple manifest: {os.path.join(output_dir, 'ntuple_manifest.json')}")
         print()
         print("使用方法：")
         print(f"  # 自动编排（提交 LHE → 等待 → 提交 processing）")

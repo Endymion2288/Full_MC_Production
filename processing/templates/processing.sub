@@ -3,16 +3,17 @@
 # ==============================================================================
 # 由 dag_generator.py 通过 DAGMan VARS 注入以下变量：
 #   campaign / job_id / inputs / modes / analysis / n_sources
-#   max_events / enable_ntuple / cleanup
+#   max_events / enable_ntuple / efficiency_ntuple / cleanup
 #   request_cpus / request_memory / request_disk
 #   processing_bundle_path / processing_bundle_name / proxy_bundle_path / proxy_bundle_name
+#   log_dir
 # ==============================================================================
 
 Universe = vanilla
 
 Executable = /bin/bash
 transfer_executable = False
-Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(processing_bundle_name); cd runtime/processing; bash run_chain.sh --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events $(max_events) --enable-ntuple $(enable_ntuple) --cleanup $(cleanup)'"
+Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(processing_bundle_name); cd runtime/processing; bash run_chain.sh --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events $(max_events) --enable-ntuple $(enable_ntuple) --efficiency-ntuple $(efficiency_ntuple) --cleanup $(cleanup)'"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
@@ -21,9 +22,9 @@ Transfer_Input_Files = $(processing_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
-Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
+Output = $(log_dir)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error  = $(log_dir)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log    = $(log_dir)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
 
 request_cpus = $(request_cpus)
 request_memory = $(request_memory)

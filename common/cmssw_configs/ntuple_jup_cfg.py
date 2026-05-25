@@ -26,6 +26,18 @@ ivars.register('runOnMC',
                VarParsing.VarParsing.varType.bool,
                "Run on MC (True) or Data (False)")
 
+ivars.register('doMonteCarloTree',
+               False,
+               VarParsing.VarParsing.multiplicity.singleton,
+               VarParsing.VarParsing.varType.bool,
+               "Write MC truth tree branches")
+
+ivars.register('requireAcceptedCandidatesForMonteCarloTree',
+               True,
+               VarParsing.VarParsing.multiplicity.singleton,
+               VarParsing.VarParsing.varType.bool,
+               "Require accepted reconstructed candidates before writing MC tree entries")
+
 # Note: maxEvents is already registered by VarParsing('analysis')
 # Set default value instead of re-registering
 ivars.maxEvents = -1
@@ -138,7 +150,8 @@ process.mkcands = cms.EDAnalyzer('MultiLepPAT',
         inputGEN  = cms.untracked.InputTag("genParticles"),
         VtxSample   = cms.untracked.string('offlineSlimmedPrimaryVertices'),
         DoJPsiMassConstraint = cms.untracked.bool(True),
-        DoMonteCarloTree = cms.untracked.bool(False),
+        DoMonteCarloTree = cms.untracked.bool(ivars.doMonteCarloTree),
+        RequireAcceptedCandidatesForMonteCarloTree = cms.untracked.bool(ivars.requireAcceptedCandidatesForMonteCarloTree),
         MonteCarloParticleId = cms.untracked.int32(20443),
         trackQualities = cms.untracked.vstring('loose','tight','highPurity'),
         MinNumMuPixHits = cms.untracked.int32(1),
