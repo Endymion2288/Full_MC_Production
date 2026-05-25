@@ -12,9 +12,9 @@ Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
 Transfer_Input_Files = $(summary_bundle_path)
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).stderr
-Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/summary_$(Cluster)_$(Process).log
+Output = $(log_root)/summary_$(Cluster)_$(Process).stdout
+Error  = $(log_root)/summary_$(Cluster)_$(Process).stderr
+Log    = $(log_root)/summary_$(Cluster).log
 
 request_cpus = 1
 request_memory = 1GB

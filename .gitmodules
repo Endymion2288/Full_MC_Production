@@ -1,0 +1,3 @@
+[submodule "external/TPS-Onia2MuMu"]
+	path = external/TPS-Onia2MuMu
+	url = git@github.com:Eric100911/TPS-Onia2MuMu.git

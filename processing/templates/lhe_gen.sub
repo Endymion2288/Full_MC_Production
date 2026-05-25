@@ -5,6 +5,7 @@
 #   pool / seed / min_pt_* / unwevt / test_mode
 #   request_cpus / request_memory / request_disk
 #   lhe_bundle_path / lhe_bundle_name / proxy_bundle_path / proxy_bundle_name
+#   log_root
 # ==============================================================================
 
 Universe = vanilla
@@ -20,9 +21,9 @@ Transfer_Input_Files = $(lhe_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
-Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
+Output = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
+Error  = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
+Log    = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster).log
 
 request_cpus = $(request_cpus)
 request_memory = $(request_memory)

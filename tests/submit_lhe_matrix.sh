@@ -250,7 +250,7 @@ for idx in "${!SUBMITTED_POOLS[@]}"; do
     pool="${SUBMITTED_POOLS[$idx]}"
     seed="${SUBMITTED_SEEDS[$idx]}"
     cluster_id="${SUBMITTED_CLUSTERS[$idx]}"
-    log_file="${BASE_DIR}/log/lhe_${pool}_${seed}_${cluster_id}_0.log"
+    log_file="${BASE_DIR}/log/lhe_${pool}_${seed}_${cluster_id}.log"
     remote_url="root://cceos.ihep.ac.cn//eos/ihep/cms/store/user/xcheng/MC_Production_v3/lhe_pools/${pool}/sample_${pool}_${seed}.lhe"
     local_copy="/tmp/xcheng/${pool}_${seed}.lhe"
 

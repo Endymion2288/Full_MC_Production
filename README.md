@@ -13,7 +13,7 @@
 
 - 代码接口保留全链路能力，包括 `Ntuple` 步骤。
 - 本轮小批量 HTCondor 测试默认以跑通到 `MiniAOD` 并完成远端 stage-out 为准。
-- `Ntuple` 步骤保留在接口中；若要真正执行，请确保 `common/packages/` 中的分析包存在且内容与目标分析代码同步。
+- `Ntuple` 步骤保留在接口中；若要真正执行，请确保 `external/TPS-Onia2MuMu` submodule 已初始化，且其 gitlink 指向你要打包的分析代码状态。
 - `workbook_v2.md` 中要求的“所有程序、文件、证书统一打包上传后在 worker 解压运行”已经落实到当前 submit 模板；worker 运行时不再回读 AFS 业务目录。
 - worker 启动时会把打包证书复制到节点默认代理路径 `/tmp/x509up_u$UID`；后续程序不再通过环境变量指向解压目录中的本地文件。
 
@@ -72,10 +72,15 @@ export X509_USER_PROXY=/tmp/x509up_u$(id -u)
 
 可选但推荐：
 
-- `common/packages/jjp_code.tar.gz`
-- `common/packages/jup_code.tar.gz`
+- `external/TPS-Onia2MuMu` git submodule
 
-分析包缺失时，`validate` 默认只给出提示，不会阻止生成“到 MiniAOD”为止的测试 DAG。
+分析包缺失时，`validate` 默认只给出提示，不会阻止生成“到 MiniAOD”为止的测试 DAG；只有启用 ntuple 时才需要它。运行 `prepare-runtime`、`generate` 或 `generate-test` 时，`dag_generator.py` 会从 submodule 自动打包出 `tpsonia2mumu_code.tar.gz` 并放进 runtime bundle。
+
+首次克隆或切换分支后请先初始化 submodule：
+
+```bash
+git submodule update --init --recursive
+```
 
 ## 主入口用法
 
@@ -94,7 +99,7 @@ python3 dag_generator.py validate --campaign JJP_DPS2_CS --scan-existing
 python3 dag_generator.py validate --campaign JUP_DPS1 --scan-existing
 ```
 
-若要把 `jjp_code.tar.gz` 和 `jup_code.tar.gz` 也作为硬依赖：
+若要把 `external/TPS-Onia2MuMu` submodule 也作为硬依赖：
 
 ```bash
 python3 dag_generator.py validate --campaign JJP_DPS1 --strict-analysis-packages
@@ -122,6 +127,23 @@ python3 dag_generator.py generate \
 - `--test-mode`
   把 LHE 生成切到 fast-test。
 
+### 生成 HELAC-only Fock-state matrix DAG
+
+```bash
+python3 dag_generator.py generate-helac-matrix \
+  --output-dir generated/helac_matrix \
+  --output helac_matrix.dag \
+  --stageout-dir helac_matrix/jpsi_upsilon_fock_scan \
+  --seed-base 92000 \
+  --maxjobs-lhe 20
+```
+
+该入口只运行 HELAC-Onia，不接后续 shower/CMSSW。它会生成 162 个 job：
+9 个 `cc~` Fock state、9 个 `bb~` Fock state，以及 born / `+ g` 两种过程。
+每个 job 会上传一个 `PROC_HO_*/P0_*/output/` 目录 tarball，远端路径位于
+`/eos/ihep/cms/store/user/xcheng/MC_Production_v3/helac_matrix/jpsi_upsilon_fock_scan/`。
+色八重态 charm/bottom state 会在 HELAC 输入中把对应重夸克质量提高 `0.1 GeV`。
+
 ### 仅准备 worker runtime bundle
 
 ```bash
@@ -132,6 +154,9 @@ python3 dag_generator.py prepare-runtime \
 说明：
 
 - submit 模式下，bundle 输出目录必须放在 AFS 工作区，而不是 submit host 的本地 `/tmp`。
+- 需要 ntuple runtime 时加 `--include-ntuple`；若提供
+  `--cmssw15-runtime-tarball` 或 `common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz`
+  存在且结构有效，会优先打包预编译 CMSSW15 runtime，否则回退到 submodule source package。
 - 该命令会同时生成：
   - `lhe_runtime_bundle.tar.gz`
   - `processing_runtime_bundle.tar.gz`
@@ -187,6 +212,17 @@ python3 dag_generator.py generate-test \
 ```bash
 ./tests/run_all_tests.sh --submit --wait
 ```
+
+### 启用 ntuple runtime smoke
+
+```bash
+./tests/run_all_tests.sh \
+  --enable-ntuple \
+  --cmssw15-runtime-tarball common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz
+```
+
+启用 ntuple 时，校验会要求预编译 CMSSW15 runtime tarball 或
+`external/TPS-Onia2MuMu` submodule 至少有一个可用。
 
 ### 更细的测试控制
 
@@ -251,7 +287,7 @@ python3 dag_generator.py generate-test \
 
 ## 当前已知限制
 
-- 即使分析包存在，本轮小批量 Condor 验证也仍建议默认使用 `--disable-ntuple`，先把验收聚焦在 MiniAOD 与远端 stage-out。
+- 即使 ntuple submodule 已初始化，本轮小批量 Condor 验证也仍建议默认使用 `--disable-ntuple`，先把验收聚焦在 MiniAOD 与远端 stage-out。
 - `phi_mpi_on_gluon` 当前通过 Pythia 事件记录里 `status 21-29` 的 hardest-process gluon 祖先关系判定 `phi` 来源；这已经比原来的占位接口更接近 workbook 要求，但仍建议在正式大样本前做额外物理抽查。
 - `condor_submit` 目前会对 submit 模板中的 `MaxRetries` 给出“unused”警告；这不影响实际提交，但说明该字段不是 submit 描述层的生效参数，真正的重试控制仍以 DAGMan `RETRY` 为准。
 
