@@ -21,8 +21,8 @@ Transfer_Input_Files = $(processing_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Output = /dev/null
+Error  = /dev/null
 Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
 
 request_cpus = $(request_cpus)

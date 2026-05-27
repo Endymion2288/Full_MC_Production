@@ -503,6 +503,7 @@ prepare_crystalball_addon_input() {
     fi
 
     printf '%s\n# CrystalBall state selected by run_helac.sh\n' "${state}" > "${addon_dir}/input/state.inp"
+    printf '%s\n' "${MY_SEED}" > "${addon_dir}/input/seed.input"
     cp "${helac_dir}/input/default.inp" "${addon_dir}/input/default.inp"
     for support_card in \
         decay_default.inp decay_param_default.inp decay_user.inp decay_param_user.inp \
@@ -537,6 +538,28 @@ build_crystalball_addon_if_needed() {
     mkdir -p "${helac_dir}/bin" "${addon_dir}/bin" "${addon_dir}/obj" "${addon_dir}/mod" "${addon_dir}/output" "${addon_dir}/tmp"
     msg_info "Building pp_psiX_CrystalBall addon..."
     run_logged "build_pp_psiX_CrystalBall" make -C "${addon_dir}" -f makefile_pp_psiX_CrystalBall HODIR="${helac_dir}" FC="${FC:-gfortran}" all
+}
+
+patch_crystalball_addon_seed_init() {
+    local helac_dir="$1"
+    local source_file="${helac_dir}/addon/pp_psiX_CrystalBall/src/pp_psiX_cb.f90"
+    local include_line='    INCLUDE "../../../src/RANDA_init.inc"'
+
+    if [[ ! -f "${source_file}" ]]; then
+        msg_error "CrystalBall addon source missing: ${source_file}"
+        return 1
+    fi
+
+    if grep -q 'RANDA_init.inc' "${source_file}"; then
+        return 0
+    fi
+
+    msg_info "Patching CrystalBall addon random seed initialization..."
+    sed -i "/INTEGER::IDBMUP1,IDBMUP2,IDWTUP/a\\${include_line}" "${source_file}"
+    if ! grep -q 'RANDA_init.inc' "${source_file}"; then
+        msg_error "Failed to patch CrystalBall addon seed initialization"
+        return 1
+    fi
 }
 
 # Parse command line arguments
@@ -742,6 +765,7 @@ cd HELAC-Onia-2.7.6
 
 if pool_uses_crystalball_addon "${POOL_NAME}"; then
     prepare_crystalball_addon_input "$(pwd)" "${POOL_NAME}"
+    patch_crystalball_addon_seed_init "$(pwd)"
     build_crystalball_addon_if_needed "$(pwd)"
 
     msg_info "Running HELAC-Onia CrystalBall addon..."

@@ -196,6 +196,7 @@ class WorkflowOptions:
         force_generate_lhe: bool,
         proxy_path: str,
         lhe_unwevt: Optional[int],
+        lhe_output_prefix: Optional[str],
         dagman_max_jobs_submitted: int,
         dagman_max_jobs_idle: int,
     ):
@@ -208,6 +209,7 @@ class WorkflowOptions:
         self.force_generate_lhe = force_generate_lhe
         self.proxy_path = proxy_path
         self.lhe_unwevt = lhe_unwevt
+        self.lhe_output_prefix = lhe_output_prefix
         self.dagman_max_jobs_submitted = dagman_max_jobs_submitted
         self.dagman_max_jobs_idle = dagman_max_jobs_idle
 
@@ -215,6 +217,12 @@ class WorkflowOptions:
         if self.lhe_unwevt is not None:
             return self.lhe_unwevt
         return 100 if self.test_mode else 100000
+
+    def lhe_output_dir_for_pool(self, pool_name: str) -> str:
+        pool_dir = pool_storage_name(pool_name)
+        if self.lhe_output_prefix:
+            return f"{self.lhe_output_prefix.rstrip('/')}/{pool_dir}"
+        return f"lhe_pools/{pool_dir}"
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -227,6 +235,7 @@ class WorkflowOptions:
             "force_generate_lhe": self.force_generate_lhe,
             "proxy_path": self.proxy_path,
             "lhe_unwevt": self.resolved_lhe_unwevt(),
+            "lhe_output_prefix": self.lhe_output_prefix,
             "dagman_max_jobs_submitted": self.dagman_max_jobs_submitted,
             "dagman_max_jobs_idle": self.dagman_max_jobs_idle,
         }
@@ -685,6 +694,11 @@ def pool_dag_label(pool_name: str) -> str:
     return POOL_DAG_LABELS.get(pool_name, pool_name.replace("pool_", ""))
 
 
+def safe_path_component(value: str) -> str:
+    cleaned = "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in value)
+    return cleaned.strip("._-") or "run"
+
+
 def build_bundle(bundle_path: str, items: Sequence[Tuple[str, str]]) -> None:
     """把运行时需要的文件打成 tar.gz，worker 侧统一解压后运行。"""
 
@@ -838,15 +852,17 @@ class DAGBuilder:
         while len(jobs) < required_count:
             index = len(jobs)
             seed = self.seed_for_pool_index(pool_name, index)
+            lhe_output_dir = self.options.lhe_output_dir_for_pool(pool_name)
             job_name = f"LHE_{pool_dag_label(pool_name)}_{index}"
             request_cpus, request_memory, request_disk = self.lhe_resource_request()
             jobs.append(job_name)
-            specs.append(f"GEN:{pool_name}:{index}:{seed}")
+            specs.append(f"GEN:{pool_name}:{index}:{seed}:{lhe_output_dir}")
             self.dag_lines.append(f"JOB {job_name} {os.path.join(BASE_DIR, 'processing/templates/lhe_gen.sub')}")
             self.dag_lines.append(
                 "VARS {job} pool=\"{pool}\" seed=\"{seed}\" "
                 "min_pt_conia=\"{min_pt_conia}\" min_pt_bonia=\"{min_pt_bonia}\" "
                 "min_pt_q=\"{min_pt_q}\" unwevt=\"{unwevt}\" test_mode=\"{test_mode}\" "
+                "lhe_output_dir=\"{lhe_output_dir}\" "
                 "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
                 "lhe_bundle_path=\"{lhe_bundle_path}\" lhe_bundle_name=\"{lhe_bundle_name}\" "
                 "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\"".format(
@@ -858,6 +874,7 @@ class DAGBuilder:
                     min_pt_q=dag_escape(pool.min_pt_q),
                     unwevt=dag_escape(self.options.resolved_lhe_unwevt()),
                     test_mode=dag_escape(bool_string(self.options.test_mode)),
+                    lhe_output_dir=dag_escape(lhe_output_dir),
                     request_cpus=dag_escape(request_cpus),
                     request_memory=dag_escape(request_memory),
                     request_disk=dag_escape(request_disk),
@@ -1159,6 +1176,10 @@ def execute_generation(
     output_dir = os.path.abspath(output_dir)
     if not dry_run:
         ensure_submit_visible_output_dir(output_dir)
+    if options.lhe_output_prefix is None and options.test_mode and options.force_generate_lhe:
+        options.lhe_output_prefix = "lhe_pools_tests/{name}".format(
+            name=safe_path_component(os.path.basename(output_dir))
+        )
     pool_requirements = compute_pool_requirements(campaign_names, options.jobs_per_campaign)
     if options.force_generate_lhe:
         existing_pools = OrderedDict(
@@ -1169,7 +1190,7 @@ def execute_generation(
                     "remote_count": 0,
                     "use_existing": False,
                     "error": "已禁用远端复用",
-                    "remote_path": f"{EOS_BASE}/lhe_pools/{pool_storage_name(pool_name)}",
+                    "remote_path": f"{EOS_BASE}/{options.lhe_output_dir_for_pool(pool_name)}",
                 },
             )
             for pool_name, required_count in pool_requirements.items()
@@ -1314,6 +1335,14 @@ def add_common_generation_arguments(parser: argparse.ArgumentParser) -> None:
         "--force-generate-lhe",
         action="store_true",
         help="即使远端已有文件，也强制生成本次需要的全部 LHE。",
+    )
+    parser.add_argument(
+        "--lhe-output-prefix",
+        default=None,
+        help=(
+            "强制生成 LHE 时写入的远端前缀；默认正式模式为 lhe_pools，"
+            "generate-test + --force-generate-lhe 自动使用 lhe_pools_tests/<输出目录名>。"
+        ),
     )
     parser.add_argument(
         "--proxy-path",
@@ -1473,6 +1502,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             force_generate_lhe=args.force_generate_lhe,
             proxy_path=args.proxy_path,
             lhe_unwevt=args.lhe_unwevt,
+            lhe_output_prefix=args.lhe_output_prefix,
             dagman_max_jobs_submitted=args.dagman_max_jobs_submitted,
             dagman_max_jobs_idle=args.dagman_max_jobs_idle,
         )

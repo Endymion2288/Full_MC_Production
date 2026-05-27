@@ -2,7 +2,7 @@
 # lhe_gen.sub - LHE 生成节点 submit 模板
 # ==============================================================================
 # 由 dag_generator.py 通过 DAGMan VARS 注入以下变量：
-#   pool / seed / min_pt_* / unwevt / test_mode
+#   pool / seed / min_pt_* / unwevt / test_mode / lhe_output_dir
 #   request_cpus / request_memory / request_disk
 #   lhe_bundle_path / lhe_bundle_name / proxy_bundle_path / proxy_bundle_name
 # ==============================================================================
@@ -11,7 +11,7 @@ Universe = vanilla
 
 Executable = /bin/bash
 transfer_executable = False
-Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(lhe_bundle_name); cd runtime/lhe_generation; bash run_helac.sh --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q) --unwevt $(unwevt) --test-mode $(test_mode)'"
+Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(lhe_bundle_name); cd runtime/lhe_generation; bash run_helac.sh --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q) --unwevt $(unwevt) --test-mode $(test_mode) --output-dir $(lhe_output_dir)'"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
@@ -20,8 +20,8 @@ Transfer_Input_Files = $(lhe_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
-Error  = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
+Output = /dev/null
+Error  = /dev/null
 Log    = /afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
 
 request_cpus = $(request_cpus)
