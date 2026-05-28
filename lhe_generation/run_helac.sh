@@ -382,6 +382,18 @@ count_lhe_events() {
     echo "${event_count}"
 }
 
+set_user_inp_value() {
+    local user_inp="$1"
+    local key="$2"
+    local value="$3"
+
+    if grep -q -E "^${key}[[:space:]]" "${user_inp}"; then
+        sed -i -E "s|^(${key})[[:space:]].*$|\\1 ${value}|" "${user_inp}"
+    else
+        printf '%s %s\n' "${key}" "${value}" >> "${user_inp}"
+    fi
+}
+
 prepare_runtime_user_inp() {
     local helac_dir="$1"
     local runtime_user_inp="${helac_dir}/input/user.inp"
@@ -410,8 +422,151 @@ prepare_runtime_user_inp() {
         -e "s|^(ranhel)[[:space:]].*$|\\1 4|" \
         "${runtime_user_inp}"
 
+    # Defaults needed by CrystalBall addons; existing ho_cluster pools ignore
+    # keys they do not use.
+    set_user_inp_value "${runtime_user_inp}" "lhapdf" "F"
+    set_user_inp_value "${runtime_user_inp}" "beam2_pdf" "-1"
+    set_user_inp_value "${runtime_user_inp}" "useMCFMrun" "T"
+    set_user_inp_value "${runtime_user_inp}" "itmax" "1"
+    set_user_inp_value "${runtime_user_inp}" "muF_over_ref" "1d0"
+    set_user_inp_value "${runtime_user_inp}" "PDF_Hessian2MC" "F"
+    set_user_inp_value "${runtime_user_inp}" "N_MCPDFs" "100"
+    set_user_inp_value "${runtime_user_inp}" "Way_Hessian2MC" "1"
+    set_user_inp_value "${runtime_user_inp}" "reweight_pdf" "F"
+    set_user_inp_value "${runtime_user_inp}" "pdf_min" "21101"
+    set_user_inp_value "${runtime_user_inp}" "pdf_max" "21140"
+    set_user_inp_value "${runtime_user_inp}" "beam2_pdf_min" "-1"
+    set_user_inp_value "${runtime_user_inp}" "beam2_pdf_max" "-1"
+    set_user_inp_value "${runtime_user_inp}" "nPDF_id" "0"
+    set_user_inp_value "${runtime_user_inp}" "reweight_npdf" "F"
+    set_user_inp_value "${runtime_user_inp}" "npdf_min" "402"
+    set_user_inp_value "${runtime_user_inp}" "npdf_max" "431"
+    set_user_inp_value "${runtime_user_inp}" "npdf_isospin" "T"
+    set_user_inp_value "${runtime_user_inp}" "include_ref" "T"
+    set_user_inp_value "${runtime_user_inp}" "fermion_motion" "F"
+    set_user_inp_value "${runtime_user_inp}" "pmax_fermion_motion" "0.26d0"
+    set_user_inp_value "${runtime_user_inp}" "literature" "0"
+    set_user_inp_value "${runtime_user_inp}" "fixtarget" "F"
+    set_user_inp_value "${runtime_user_inp}" "topdrawer_output" "F"
+    set_user_inp_value "${runtime_user_inp}" "gnuplot_output" "F"
+    set_user_inp_value "${runtime_user_inp}" "root_output" "F"
+    set_user_inp_value "${runtime_user_inp}" "hwu_output" "F"
+
     echo "[INFO] 运行时 user.inp 中的关键积分参数:"
     grep -E '^(minptq|minptconia|minptbonia|preunw|unwevt|nmc|nopt|nopt_step|noptlim|gener|ranhel)[[:space:]]' "${runtime_user_inp}"
+}
+
+pool_uses_crystalball_addon() {
+    case "$1" in
+        "pool_jpsi_CSCO_g"|"pool_upsilon_CSCO_g")
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+crystalball_state_for_pool() {
+    case "$1" in
+        "pool_jpsi_CSCO_g") echo "1" ;;
+        "pool_upsilon_CSCO_g") echo "3" ;;
+        *) return 1 ;;
+    esac
+}
+
+crystalball_default_card_for_pool() {
+    case "$1" in
+        "pool_jpsi_CSCO_g") echo "crystalball_jpsi.inp" ;;
+        "pool_upsilon_CSCO_g") echo "crystalball_Y1S.inp" ;;
+        *) return 1 ;;
+    esac
+}
+
+prepare_crystalball_addon_input() {
+    local helac_dir="$1"
+    local pool_name="$2"
+    local addon_dir="${helac_dir}/addon/pp_psiX_CrystalBall"
+    local state=""
+    local crystalball_card=""
+    local minpt_onia=""
+
+    state=$(crystalball_state_for_pool "${pool_name}")
+    crystalball_card=$(crystalball_default_card_for_pool "${pool_name}")
+
+    prepare_runtime_user_inp "${addon_dir}"
+
+    if [[ "${pool_name}" == "pool_upsilon_CSCO_g" ]]; then
+        minpt_onia="${MIN_PT_BONIA}"
+    else
+        minpt_onia="${MIN_PT_CONIA}"
+    fi
+
+    printf '%s\n# CrystalBall state selected by run_helac.sh\n' "${state}" > "${addon_dir}/input/state.inp"
+    printf '%s\n' "${MY_SEED}" > "${addon_dir}/input/seed.input"
+    cp "${helac_dir}/input/default.inp" "${addon_dir}/input/default.inp"
+    for support_card in \
+        decay_default.inp decay_param_default.inp decay_user.inp decay_param_user.inp \
+        fragment_default.inp fragment_user.inp fragment_card_default.inp fragment_card_user.inp \
+        shower_card_default.inp shower_card_user.inp py8_onia_default.inp py8_onia_user.inp; do
+        if [[ -f "${helac_dir}/input/${support_card}" ]]; then
+            cp "${helac_dir}/input/${support_card}" "${addon_dir}/input/${support_card}"
+        fi
+    done
+    cp "${addon_dir}/input/${crystalball_card}" "${addon_dir}/input/crystalball.inp"
+    ln -sfn ../../pdf "${addon_dir}/pdf"
+    set_user_inp_value "${addon_dir}/input/user.inp" "minpt1c" "${minpt_onia}d0"
+    set_user_inp_value "${addon_dir}/input/user.inp" "maxpt1c" "-1d0"
+    set_user_inp_value "${addon_dir}/input/user.inp" "miny1c" "-2.4d0"
+    set_user_inp_value "${addon_dir}/input/user.inp" "maxy1c" "2.4d0"
+
+    echo "[INFO] CrystalBall addon input:"
+    echo "  state.inp: ${state}"
+    echo "  crystalball.inp: ${crystalball_card}"
+    grep -E '^(minpt1c|maxpt1c|miny1c|maxy1c|itmax|nmc|preunw|unwevt)[[:space:]]' "${addon_dir}/input/user.inp"
+}
+
+build_crystalball_addon_if_needed() {
+    local helac_dir="$1"
+    local addon_dir="${helac_dir}/addon/pp_psiX_CrystalBall"
+    local exe="${addon_dir}/bin/HO_pp_psiX_CrystalBall"
+
+    if [[ -x "${exe}" ]]; then
+        return 0
+    fi
+
+    mkdir -p "${helac_dir}/bin" "${addon_dir}/bin" "${addon_dir}/obj" "${addon_dir}/mod" "${addon_dir}/output" "${addon_dir}/tmp"
+    msg_info "Building pp_psiX_CrystalBall addon..."
+    if ! run_logged "build_pp_psiX_CrystalBall" make -C "${addon_dir}" -f makefile_pp_psiX_CrystalBall HODIR="${helac_dir}" FC="${FC:-gfortran}" all; then
+        msg_error "CrystalBall addon build failed"
+        return 1
+    fi
+    if [[ ! -x "${exe}" ]]; then
+        msg_error "CrystalBall addon executable not created: ${exe}"
+        return 1
+    fi
+}
+
+patch_crystalball_addon_seed_init() {
+    local helac_dir="$1"
+    local source_file="${helac_dir}/addon/pp_psiX_CrystalBall/src/pp_psiX_cb.f90"
+    local include_line='    INCLUDE "../../../src/RANDA_init.inc"'
+
+    if [[ ! -f "${source_file}" ]]; then
+        msg_error "CrystalBall addon source missing: ${source_file}"
+        return 1
+    fi
+
+    if grep -q 'RANDA_init.inc' "${source_file}"; then
+        return 0
+    fi
+
+    msg_info "Patching CrystalBall addon random seed initialization..."
+    sed -i "/INTEGER::IDBMUP1,IDBMUP2,IDWTUP/a\\${include_line}" "${source_file}"
+    if ! grep -q 'RANDA_init.inc' "${source_file}"; then
+        msg_error "Failed to patch CrystalBall addon seed initialization"
+        return 1
+    fi
 }
 
 # Parse command line arguments
@@ -479,14 +634,10 @@ if [ -z "$PROCESS_STRING" ]; then
         # These are the PRIMARY pools recommended by workbook.md
         # =====================================================================
         "pool_jpsi_CSCO_g")
-            # J/psi (CS+CO) + g using define syntax
-            PROCESS_STRING="define jpsi_all = cc~(3S11) cc~(3S18) cc~(1S08) cc~(3PJ8)
-generate g g > jpsi_all g"
+            PROCESS_STRING="addon/pp_psiX_CrystalBall state=J/psi"
             ;;
         "pool_upsilon_CSCO_g")
-            # Upsilon (CS+CO) + g using define syntax
-            PROCESS_STRING="define upsilon_all = bb~(3S11) bb~(3S18) bb~(1S08) bb~(3PJ8)
-generate g g > upsilon_all g"
+            PROCESS_STRING="addon/pp_psiX_CrystalBall state=Upsilon(1S)"
             ;;
         "pool_jpsi_upsilon_CSCO")
             # J/psi + Upsilon (CS only for now, as per workbook)
@@ -619,10 +770,28 @@ ensure_helac
 # Enter HELAC directory
 cd HELAC-Onia-2.7.6
 
-# Create run configuration with LDME parameters
-# LDME values from:
-# - workbook_v2.md 中给出的 Helac-Onia 格式换算值
-cat > run_config.ho << EOF
+if pool_uses_crystalball_addon "${POOL_NAME}"; then
+    prepare_crystalball_addon_input "$(pwd)" "${POOL_NAME}"
+    build_crystalball_addon_if_needed "$(pwd)"
+
+    msg_info "Running HELAC-Onia CrystalBall addon..."
+    run_logged_bash "helac_pp_psiX_CrystalBall" "cd '$(pwd)/addon/pp_psiX_CrystalBall' && ./bin/HO_pp_psiX_CrystalBall"
+    HELAC_RUN_LOG="${LAST_STDOUT_LOG}"
+    cp "${HELAC_RUN_LOG}" ../helac_run.log
+    show_log_tail "CrystalBall addon stdout" "${HELAC_RUN_LOG}" 120
+
+    RAW_LHE_FILE=$(find addon/pp_psiX_CrystalBall/output output \
+        -name "sample_pp_psiX_crystalball.lhe" -type f 2>/dev/null | sort | tail -1)
+    if [[ -z "${RAW_LHE_FILE}" ]]; then
+        RAW_LHE_FILE=$(find addon/pp_psiX_CrystalBall/output output \
+            -name "*.lhe" -type f ! -name "*_py8.lhe" 2>/dev/null | sort | tail -1)
+    fi
+    PY8_LHE_FILE=""
+else
+    # Create run configuration with LDME parameters
+    # LDME values from:
+    # - workbook_v2.md 中给出的 Helac-Onia 格式换算值
+    cat > run_config.ho << EOF
 set cmass = 1.54845d0
 set bmass = 4.73020d0
 set LDMEcc1S08 = 0.0023125d0
@@ -655,30 +824,31 @@ launch
 exit
 EOF
 
-# 强制同步 runtime user.inp，避免静态模板中的旧积分参数覆盖掉当前作业设置。
-prepare_runtime_user_inp "$(pwd)"
+    # 强制同步 runtime user.inp，避免静态模板中的旧积分参数覆盖掉当前作业设置。
+    prepare_runtime_user_inp "$(pwd)"
 
-msg_info "Running HELAC-Onia..."
-run_logged_bash "helac_ho_cluster" "cd '$(pwd)' && ./ho_cluster < run_config.ho"
-HELAC_RUN_LOG="${LAST_STDOUT_LOG}"
-cp "${HELAC_RUN_LOG}" ../helac_run.log
+    msg_info "Running HELAC-Onia..."
+    run_logged_bash "helac_ho_cluster" "cd '$(pwd)' && ./ho_cluster < run_config.ho"
+    HELAC_RUN_LOG="${LAST_STDOUT_LOG}"
+    cp "${HELAC_RUN_LOG}" ../helac_run.log
 
-# Find output LHE file
-RUN_DIR=$(grep "INFO: Results are collected in" "${HELAC_RUN_LOG}" | \
-          sed -r -e "s,^.*(PROC_HO_[0-9]+)\/.*$,\1,g" | head -1)
+    # Find output LHE file
+    RUN_DIR=$(grep "INFO: Results are collected in" "${HELAC_RUN_LOG}" | \
+              sed -r -e "s,^.*(PROC_HO_[0-9]+)\/.*$,\1,g" | head -1)
 
-if [ -z "$RUN_DIR" ]; then
-    echo "Error: Could not find run directory in log"
-    exit 1
-fi
+    if [ -z "$RUN_DIR" ]; then
+        echo "Error: Could not find run directory in log"
+        exit 1
+    fi
 
-# Find the LHE file from the latest run directory
-if [[ -n "${RUN_DIR}" ]] && [[ -d "${RUN_DIR}/results" ]]; then
-    RAW_LHE_FILE=$(find "${RUN_DIR}/results" -name "*.lhe" -type f ! -name "*_py8.lhe" | head -1)
-    PY8_LHE_FILE=$(find "${RUN_DIR}/results" -name "*_py8.lhe" -type f | head -1)
-else
-    RAW_LHE_FILE=$(find . -path "./PROC_HO_*/results/*.lhe" -type f ! -name "*_py8.lhe" | sort | tail -1)
-    PY8_LHE_FILE=$(find . -path "./PROC_HO_*/results/*_py8.lhe" -type f | sort | tail -1)
+    # Find the LHE file from the latest run directory
+    if [[ -n "${RUN_DIR}" ]] && [[ -d "${RUN_DIR}/results" ]]; then
+        RAW_LHE_FILE=$(find "${RUN_DIR}/results" -name "*.lhe" -type f ! -name "*_py8.lhe" | head -1)
+        PY8_LHE_FILE=$(find "${RUN_DIR}/results" -name "*_py8.lhe" -type f | head -1)
+    else
+        RAW_LHE_FILE=$(find . -path "./PROC_HO_*/results/*.lhe" -type f ! -name "*_py8.lhe" | sort | tail -1)
+        PY8_LHE_FILE=$(find . -path "./PROC_HO_*/results/*_py8.lhe" -type f | sort | tail -1)
+    fi
 fi
 
 if [[ -n "${RAW_LHE_FILE}" && -f "${RAW_LHE_FILE}" ]]; then
@@ -686,6 +856,10 @@ if [[ -n "${RAW_LHE_FILE}" && -f "${RAW_LHE_FILE}" ]]; then
 elif [[ -n "${PY8_LHE_FILE}" && -f "${PY8_LHE_FILE}" ]]; then
     LHE_FILE="${PY8_LHE_FILE}"
 else
+    if pool_uses_crystalball_addon "${POOL_NAME}"; then
+        echo "[ERROR] CrystalBall addon output files:"
+        find addon/pp_psiX_CrystalBall/output output -maxdepth 1 -type f -printf '  %p\n' 2>/dev/null || true
+    fi
     echo "Error: LHE file not found"
     exit 1
 fi

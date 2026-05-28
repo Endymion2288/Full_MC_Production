@@ -187,22 +187,31 @@ normalize_shower_mode() {
     esac
 }
 
-# XRootD tools from CVMFS (compatible with el8 containers)
-XROOTD_BASE="/cvmfs/cms.cern.ch/el8_amd64_gcc10/external/xrootd/5.5.0-a0410a6758fd4d07b495e4c473820f38"
-XROOTD_BIN="${XROOTD_BASE}/bin"
-XROOTD_LIB="${XROOTD_BASE}/lib64"
-GCC10_LIB="/cvmfs/cms.cern.ch/el8_amd64_gcc10/external/gcc/10.3.0-84898dea653199466402e67d73657f10/lib64"
-# Clean LD_LIBRARY_PATH for xrootd tools (only el8 libs)
-XROOTD_LD_PATH="${XROOTD_LIB}:${GCC10_LIB}:/lib64:/usr/lib64"
-
-# Run xrdfs with clean el8 environment (avoid CMSSW el9 library conflicts)
-run_xrdfs() {
-    env LD_LIBRARY_PATH="${XROOTD_LD_PATH}" "${XROOTD_BIN}/xrdfs" "$@"
+# Source CMSSW_15 environment to get working xrdfs/xrdcp
+_ensure_xrootd_env() {
+    if [[ -n "${_XRD_ENV_DONE:-}" ]]; then
+        return 0
+    fi
+    _XRD_ENV_DONE=1
+    if [[ -f /cvmfs/cms.cern.ch/cmsset_default.sh ]]; then
+        source /cvmfs/cms.cern.ch/cmsset_default.sh
+        export SCRAM_ARCH=el9_amd64_gcc12
+        if [[ -d "${CMSSW_15_BASE}/src" ]]; then
+            cd "${CMSSW_15_BASE}/src"
+            eval $(scramv1 runtime -sh) 2>/dev/null || true
+            cd - > /dev/null
+        fi
+    fi
 }
 
-# Run xrdcp with clean el8 environment (avoid CMSSW el9 library conflicts)
+run_xrdfs() {
+    _ensure_xrootd_env
+    xrdfs "$@"
+}
+
 run_xrdcp() {
-    env LD_LIBRARY_PATH="${XROOTD_LD_PATH}" "${XROOTD_BIN}/xrdcp" "$@"
+    _ensure_xrootd_env
+    xrdcp "$@"
 }
 
 # Convert HELAC 9900xxxx octet codes to Pythia OniaShower 99nqnsnrnLnJ scheme
@@ -382,23 +391,29 @@ setup_cmssw12() {
     source /cvmfs/cms.cern.ch/cmsset_default.sh
     # Force el8 architecture for CMSSW_12
     export SCRAM_ARCH=el8_amd64_gcc10
-    
+
     # Create project on demand if needed
     local base_path
     base_path=$(ensure_cmssw12_project) || return 1
     export CMSSW_12_BASE="${base_path}"
 
+    if host_needs_cmssw12_container; then
+        msg_info "EL9 host detected, CMSSW_12 commands will run inside el8 container"
+        export CMSSW12_NEEDS_CONTAINER=1
+        return 0
+    fi
+
     cd "${base_path}/src"
     eval $(scramv1 runtime -sh)
     cd - > /dev/null
-    
+
     # Debug: Check if libssl.so.1.1 is available
     if ldconfig -p | grep -q "libssl.so.1.1"; then
         msg_info "libssl.so.1.1 found in system"
     else
         msg_warn "libssl.so.1.1 not found in system library cache"
     fi
-    
+
     msg_ok "CMSSW environment: ${CMSSW_VERSION}"
 }
 
@@ -684,6 +699,35 @@ PYHELPER
     echo "${output_list}"
 }
 
+
+prepare_local_pool_premix_filelist() {
+    local pool_dir="${PREMIX_LOCAL_POOL_DIR:-/home/storage29/users/xingcheng/premix_pools/Run3Summer22DRPremix_10}"
+    local output_list="${WORKDIR}/premix_input_localpool.txt"
+    local max_files="${PREMIX_LOCAL_POOL_FILES:-0}"
+
+    if [[ ! -d "${pool_dir}" ]]; then
+        msg_error "Premix local pool directory not found: ${pool_dir}"
+        return 1
+    fi
+
+    python3 - "${pool_dir}" "${output_list}" "${max_files}" <<'PYHELPER'
+import sys
+from pathlib import Path
+
+pool_dir = Path(sys.argv[1])
+output = Path(sys.argv[2])
+max_files = int(sys.argv[3])
+files = sorted(p for p in pool_dir.glob('*.root') if p.is_file() and p.stat().st_size > 0)
+if max_files > 0:
+    files = files[:max_files]
+if not files:
+    raise SystemExit(f'no non-empty ROOT files found in {pool_dir}')
+output.write_text(''.join(f'file:{p}\n' for p in files))
+print(f'wrote {len(files)} local premix files to {output}', file=sys.stderr)
+PYHELPER
+    echo "${output_list}"
+}
+
 run_cmsrun_cmssw15() {
     local cfg="$1"
     shift
@@ -720,11 +764,6 @@ SCRIPT_EOF
 
 ensure_voms_proxy() {
     msg_info "Checking VOMS proxy for pileup access..."
-
-    if [[ -z "${X509_USER_PROXY:-}" ]] && [[ -f "/home/storage29/users/xingcheng/x509up_u623600017" ]]; then
-        export X509_USER_PROXY="/home/storage29/users/xingcheng/x509up_u623600017"
-        msg_info "Using persistent proxy path: ${X509_USER_PROXY}"
-    fi
 
     if [[ -z "${X509_USER_PROXY:-}" ]] && [[ -f "/tmp/x509up_u$(id -u)" ]]; then
         export X509_USER_PROXY="/tmp/x509up_u$(id -u)"
@@ -889,91 +928,103 @@ run_shower() {
     fi
 
     HEPMC_FILES=()
-    
-    setup_cmssw12
-    cd "${SHOWER_DIR}"
-    ensure_worker_shower_tools || return 1
-    
+
+    # Pre-process LHE files (octet conversion) before entering CMSSW environment.
+    # This keeps system python3 untainted by scram runtime.
     for ((i=0; i<n_files; i++)); do
         local lhe_file="${lhe_files[$i]}"
-        local mode="${SHOWER_MODES[$i]}"
-        local normalized_mode=""
-        local hepmc_output="${WORKDIR}/shower_${i}.hepmc"
-        local local_lhe="${WORKDIR}/input_${i}.lhe"
-        
-        msg_info "Processing source $((i+1))/${n_files}: ${lhe_file}"
-        if ! normalized_mode=$(normalize_shower_mode "${mode}"); then
-            msg_error "Unknown shower mode: ${mode}"
-            return 1
-        fi
-        msg_info "Shower mode: ${mode} -> ${normalized_mode}"
-        
+
         # Download LHE file if it's a remote XRootD URL
         if [[ "$lhe_file" == root://* ]]; then
             msg_info "Downloading LHE from XRootD..."
+            local local_lhe="${WORKDIR}/input_${i}.lhe"
             run_logged "xrdcp_input_lhe_${i}" run_xrdcp -f "${lhe_file}" "${local_lhe}"
             if [[ $? -ne 0 ]] || [[ ! -f "${local_lhe}" ]]; then
                 msg_error "Failed to download LHE file from ${lhe_file}"
                 return 1
             fi
             msg_ok "Downloaded: ${local_lhe}"
-            lhe_file="${local_lhe}"
+            lhe_files[$i]="${local_lhe}"
         fi
 
         # Convert HELAC 9900xxxx octet codes to OniaShower 99nqnsnrnLnJ scheme
-        # Note: With parton_shower=1 in HELAC-Onia, the *_py8.lhe files should
-        # already have correct Pythia8 PDG codes. This conversion handles any
-        # remaining HELAC-style codes that might be present.
-        convert_lhe_octet_codes "${lhe_file}"
-        
-        if [[ "$normalized_mode" == "phi_mpi_off" ]]; then
-            # workbook_v2 默认模式：关闭 MPI，循环 hadronize 找 phi。
-            msg_info "Running phi-enriched mode-1 shower (MPI off)..."
-            run_logged "shower_sps_${i}" ./shower_sps "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 5000
-        elif [[ "$normalized_mode" == "phi_mpi_on_gluon" ]]; then
-            # 扩展模式：开启 MPI，并交给 shower_phi 处理来源判定。
-            msg_info "Running phi-enriched mode-2 shower (MPI on)..."
-            run_logged "shower_phi_${i}" ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 5000 1
-        else
-            # 普通 shower。
-            run_logged "shower_normal_${i}" ./shower_normal "${lhe_file}" "${hepmc_output}" "${shower_events}" 2.5 2.4 1000
+        convert_lhe_octet_codes "${lhe_files[$i]}"
+    done
+
+    setup_cmssw12
+    cd "${SHOWER_DIR}"
+
+    if [[ "${CMSSW12_NEEDS_CONTAINER:-0}" -eq 1 ]]; then
+        run_cmssw12_command "build_pythia_shower_tools" make -B all
+    else
+        ensure_worker_shower_tools || return 1
+    fi
+
+    for ((i=0; i<n_files; i++)); do
+        local lhe_file="${lhe_files[$i]}"
+        local mode="${SHOWER_MODES[$i]}"
+        local normalized_mode=""
+        local hepmc_output="${WORKDIR}/shower_${i}.hepmc"
+
+        msg_info "Processing source $((i+1))/${n_files}: ${lhe_file}"
+        if ! normalized_mode=$(normalize_shower_mode "${mode}"); then
+            msg_error "Unknown shower mode: ${mode}"
+            return 1
         fi
-        
+        msg_info "Shower mode: ${mode} -> ${normalized_mode}"
+
+        if [[ "$normalized_mode" == "phi_mpi_off" ]]; then
+            msg_info "Running phi-enriched mode-1 shower (MPI off)..."
+            run_cmssw12_command "shower_sps_${i}" ./shower_sps "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 5000
+        elif [[ "$normalized_mode" == "phi_mpi_on_gluon" ]]; then
+            msg_info "Running phi-enriched mode-2 shower (MPI on)..."
+            run_cmssw12_command "shower_phi_${i}" ./shower_phi "${lhe_file}" "${hepmc_output}" "${shower_events}" 3.0 2.5 2.4 5000 1
+        else
+            msg_info "Running normal shower..."
+            run_cmssw12_command "shower_normal_${i}" ./shower_normal "${lhe_file}" "${hepmc_output}" "${shower_events}" 2.5 2.4 1000
+        fi
+
         if [[ ! -f "${hepmc_output}" ]]; then
             msg_error "Shower failed: ${hepmc_output} not created"
             return 1
         fi
-        
+
         HEPMC_FILES+=("${hepmc_output}")
         msg_ok "Shower complete: ${hepmc_output}"
     done
-    
+
     cd "${WORKDIR}"
 }
 
 # Step 2: Mix HepMC files
 run_mix() {
     msg_step "Step 2: Event Mixing"
-    
+
     local n_sources=${#HEPMC_FILES[@]}
     MIXED_HEPMC="${WORKDIR}/mixed.hepmc"
-    
+
+    setup_cmssw12
     cd "${SHOWER_DIR}"
-    ensure_worker_shower_tools || return 1
-    
+
+    if [[ "${CMSSW12_NEEDS_CONTAINER:-0}" -eq 1 ]]; then
+        run_cmssw12_command "build_pythia_shower_tools" make -B all
+    else
+        ensure_worker_shower_tools || return 1
+    fi
+
     if [[ $n_sources -eq 1 ]]; then
         msg_info "Single source - converting to HepMC2 format..."
-        run_logged "event_mixer_single" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[0]}"
+        run_cmssw12_command "event_mixer_single" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[0]}"
     else
         msg_info "Mixing ${n_sources} sources..."
-        run_logged "event_mixer_multi" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[@]}"
+        run_cmssw12_command "event_mixer_multi" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[@]}"
     fi
-    
+
     if [[ ! -f "${MIXED_HEPMC}" ]]; then
         msg_error "Mixing failed: ${MIXED_HEPMC} not created"
         return 1
     fi
-    
+
     msg_ok "Mixing complete: ${MIXED_HEPMC}"
     cd "${WORKDIR}"
 }
@@ -1037,15 +1088,20 @@ run_raw() {
             premix_runtime_filelist=$(prepare_cached_premix_filelist "${premix_filelist}") || return 1
             premix_input="filelist:${premix_runtime_filelist}"
             ;;
+        localpool)
+            local premix_runtime_filelist
+            premix_runtime_filelist=$(prepare_local_pool_premix_filelist) || return 1
+            premix_input="filelist:${premix_runtime_filelist}"
+            ;;
         *)
-            msg_error "Unknown PREMIX_INPUT_MODE=${premix_mode}; expected eoscms, localcache or dbs"
+            msg_error "Unknown PREMIX_INPUT_MODE=${premix_mode}; expected eoscms, localcache, localpool or dbs"
             return 1
             ;;
     esac
 
     local raw_cmsdriver_timeout="${RAW_CMSDRIVER_TIMEOUT:-600s}"
     msg_info "Generating RAW config with PREMIX_INPUT_MODE=${premix_mode}..."
-    run_logged "cmsDriver_step2_raw"         timeout --preserve-status --kill-after=60s "${raw_cmsdriver_timeout}"         cmsDriver.py step2 \
+    run_cmssw12_command "cmsDriver_step2_raw"         timeout --preserve-status --kill-after=60s "${raw_cmsdriver_timeout}"         cmsDriver.py step2 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
         --eventcontent PREMIXRAW \
@@ -1088,7 +1144,7 @@ run_reco() {
     local cfg_file=$(mktemp --suffix=_reco_cfg.py)
     
     msg_info "Generating RECO config..."
-    run_logged "cmsDriver_step3_reco" cmsDriver.py step3 \
+    run_cmssw12_command "cmsDriver_step3_reco" cmsDriver.py step3 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
         --eventcontent AODSIM \
@@ -1129,7 +1185,7 @@ run_miniaod() {
     local cfg_file=$(mktemp --suffix=_miniaod_cfg.py)
     
     msg_info "Generating MiniAOD config..."
-    run_logged "cmsDriver_step4_miniaod" cmsDriver.py step4 \
+    run_cmssw12_command "cmsDriver_step4_miniaod" cmsDriver.py step4 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
         --eventcontent MINIAODSIM \
@@ -1298,7 +1354,8 @@ Optional:
 Input format examples:
   pool_jpsi_CSCO_g:0          Legacy format (pool:index)
   EOS:pool_jpsi_CSCO_g:0:0    Existing LHE from EOS storage
-  GEN:pool_jpsi_CSCO_g:0:1234 LHE generated by DAG，可携带实际 seed
+  GEN:pool_jpsi_CSCO_g:0:1234[:lhe_pools_tests/run/pool_jpsi_CSCO_g]
+                                LHE generated by DAG，可携带实际 seed 和输出目录
 
 Examples:
   # JJP DPS: Two J/psi sources mixed
@@ -1416,7 +1473,7 @@ IFS=',' read -ra SHOWER_MODES <<< "$MODES"
 ensure_voms_proxy
 
 # Resolve LHE files from input specs
-# Supports: file:/path/to.lhe, GEN:pool:idx, EOS:pool:idx:usage, pool:idx
+# Supports: file:/path/to.lhe, GEN:pool:idx[:seed[:output_dir]], EOS:pool:idx:usage, pool:idx
 LHE_FILES=()
 declare -a parts  # Declare array outside loop (no 'local' in main script)
 for spec in "${INPUT_SPECS[@]}"; do
@@ -1424,18 +1481,38 @@ for spec in "${INPUT_SPECS[@]}"; do
         # Local file path (from test_full_chain or local runs)
         lhe_file="${spec#file:}"
     elif [[ "$spec" == GEN:* ]]; then
-        # Format: GEN:pool_name:lhe_job_idx[:seed]
+        # Format: GEN:pool_name:lhe_job_idx[:seed[:output_dir]]
         IFS=':' read -ra parts <<< "$spec"
         pool_name="${parts[1]}"
         lhe_job_idx="${parts[2]}"
+        custom_lhe_output_dir=""
         if [[ ${#parts[@]} -ge 4 ]]; then
             seed="${parts[3]}"
         else
             seed=$((100 + lhe_job_idx))
         fi
-        lhe_file="${EOS_LHE_POOL}/${pool_name}/sample_${pool_name}_${seed}.lhe"
+        if [[ ${#parts[@]} -ge 5 && -n "${parts[4]}" ]]; then
+            custom_lhe_output_dir="${parts[4]}"
+        fi
+        if [[ -n "${custom_lhe_output_dir}" ]]; then
+            if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+                local_lhe="${LOCAL_OUTPUT_BASE}/${custom_lhe_output_dir}/sample_${pool_name}_${seed}.lhe"
+                if [[ -f "${local_lhe}" ]]; then
+                    lhe_file="${local_lhe}"
+                else
+                    lhe_file="${EOS_BASE}/${custom_lhe_output_dir}/sample_${pool_name}_${seed}.lhe"
+                fi
+            else
+                lhe_file="${EOS_BASE}/${custom_lhe_output_dir}/sample_${pool_name}_${seed}.lhe"
+            fi
+        else
+            lhe_file="${EOS_LHE_POOL}/${pool_name}/sample_${pool_name}_${seed}.lhe"
+        fi
         if ! check_remote_file "$lhe_file"; then
-            if ! lhe_file=$(get_lhe_file "$pool_name" "$lhe_job_idx"); then
+            if [[ -n "${custom_lhe_output_dir}" ]]; then
+                msg_error "Could not resolve generated LHE file for: $spec (tried: ${lhe_file})"
+                exit 1
+            elif ! lhe_file=$(get_lhe_file "$pool_name" "$lhe_job_idx"); then
                 msg_error "Could not resolve LHE file for: $spec (pool: ${pool_name}, idx: ${lhe_job_idx})"
                 exit 1
             fi

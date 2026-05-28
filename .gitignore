@@ -27,6 +27,7 @@ checks/
 .codex/
 AGENTS.md
 codex/
+tests/generated/
 *.log
 *.stderr
 *.stdout

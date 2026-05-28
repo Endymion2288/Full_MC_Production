@@ -39,6 +39,10 @@
 #include <memory>
 #include <map>
 #include <algorithm>
+#include <cstdint>
+#include <functional>
+#include <random>
+#include <string>
 
 using namespace std;
 
@@ -193,6 +197,36 @@ void printUsage(const char* progName) {
     cerr << "  " << progName << " output.hepmc src1.hepmc src2.hepmc src3.hepmc" << endl;
 }
 
+uint64_t shuffleSeedForSource(const vector<string>& inputFiles, size_t sourceIndex) {
+    uint64_t seed = 0x9e3779b97f4a7c15ULL + static_cast<uint64_t>(sourceIndex);
+    hash<string> hasher;
+    for (const auto& file : inputFiles) {
+        seed ^= static_cast<uint64_t>(hasher(file)) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    }
+    seed ^= static_cast<uint64_t>(sourceIndex + 1) * 0xbf58476d1ce4e5b9ULL;
+    return seed;
+}
+
+vector<unique_ptr<HepMC3::GenEvent>> readAllEvents(const string& inputFile) {
+    HepMC3::ReaderAscii reader(inputFile);
+    vector<unique_ptr<HepMC3::GenEvent>> events;
+
+    if (reader.failed()) {
+        cerr << "Error: Cannot open input file: " << inputFile << endl;
+        return events;
+    }
+
+    while (true) {
+        auto event = make_unique<HepMC3::GenEvent>();
+        if (!reader.read_event(*event) || reader.failed()) {
+            break;
+        }
+        events.push_back(std::move(event));
+    }
+
+    return events;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         printUsage(argv[0]);
@@ -229,17 +263,33 @@ int main(int argc, char* argv[]) {
     cout << "N events:   " << (nEvents > 0 ? to_string(nEvents) : "all") << endl;
     cout << "========================================\n" << endl;
     
-    // Open input files
-    vector<unique_ptr<HepMC3::ReaderAscii>> readers;
-    for (const auto& file : inputFiles) {
-        auto reader = make_unique<HepMC3::ReaderAscii>(file);
-        if (reader->failed()) {
-            cerr << "Error: Cannot open input file: " << file << endl;
+    // Load and shuffle each source before pairwise mixing. This avoids taking
+    // the first N events from pz-ordered inputs when one source is shorter.
+    vector<vector<unique_ptr<HepMC3::GenEvent>>> sourceEvents;
+    sourceEvents.reserve(inputFiles.size());
+    size_t availableEvents = 0;
+
+    cout << "Loading input events..." << endl;
+    for (size_t i = 0; i < inputFiles.size(); ++i) {
+        auto events = readAllEvents(inputFiles[i]);
+        if (events.empty()) {
+            cerr << "Error: No events loaded from input file: " << inputFiles[i] << endl;
             return 1;
         }
-        readers.push_back(std::move(reader));
+
+        uint64_t seed = shuffleSeedForSource(inputFiles, i);
+        mt19937_64 rng(seed);
+        shuffle(events.begin(), events.end(), rng);
+
+        cout << "  Source " << i + 1 << ": loaded " << events.size()
+             << " events, shuffle seed " << seed << endl;
+
+        if (i == 0 || events.size() < availableEvents) {
+            availableEvents = events.size();
+        }
+        sourceEvents.push_back(std::move(events));
     }
-    
+
     // Open output file
     ofstream outStream(outputFile);
     if (!outStream.is_open()) {
@@ -247,38 +297,24 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     HepMC::IO_GenEvent writer(outStream);
-    
+
+    size_t eventsToMix = availableEvents;
+    if (nEvents > 0 && static_cast<size_t>(nEvents) < eventsToMix) {
+        eventsToMix = static_cast<size_t>(nEvents);
+    }
+
     // Process events
-    int iEvent = 0;
+    size_t iEvent = 0;
     int totalJpsi = 0, totalUpsilon = 0, totalPhi = 0;
-    
-    cout << "Processing events..." << endl;
-    
-    while (true) {
-        if (nEvents > 0 && iEvent >= nEvents) break;
-        
-        // Read one event from each source
+
+    cout << "Processing " << eventsToMix << " shuffled event pairs..." << endl;
+
+    for (iEvent = 0; iEvent < eventsToMix; ++iEvent) {
         vector<HepMC3::GenEvent*> events(nSources, nullptr);
-        bool allValid = true;
-        
         for (int i = 0; i < nSources; ++i) {
-            events[i] = new HepMC3::GenEvent();
-            if (!readers[i]->read_event(*events[i]) || readers[i]->failed()) {
-                allValid = false;
-                delete events[i];
-                events[i] = nullptr;
-            }
+            events[i] = sourceEvents[i][iEvent].get();
         }
-        
-        if (!allValid) {
-            // Clean up and exit
-            for (auto evt : events) {
-                if (evt) delete evt;
-            }
-            cout << "Reached end of at least one input file." << endl;
-            break;
-        }
-        
+
         // Merge events
         HepMC::GenEvent* merged;
         if (nSources == 1) {
@@ -286,26 +322,21 @@ int main(int argc, char* argv[]) {
         } else {
             merged = mergeEvents(events, iEvent);
         }
-        
+
         // Count particles
         int nJpsi, nUpsilon, nPhi;
         countParticles(merged, nJpsi, nUpsilon, nPhi);
         totalJpsi += nJpsi;
         totalUpsilon += nUpsilon;
         totalPhi += nPhi;
-        
+
         // Write output
         writer.write_event(merged);
-        
-        // Cleanup
-        for (auto evt : events) {
-            if (evt) delete evt;
-        }
+
         delete merged;
-        
-        ++iEvent;
-        if (iEvent % 100 == 0) {
-            cout << "Merged " << iEvent << " events..." << endl;
+
+        if ((iEvent + 1) % 100 == 0) {
+            cout << "Merged " << iEvent + 1 << " events..." << endl;
         }
     }
     

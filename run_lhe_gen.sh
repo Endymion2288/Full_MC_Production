@@ -11,6 +11,8 @@ MIN_PT_BONIA="$6"
 MIN_PT_Q="$7"
 UNWEVT="$8"
 TEST_MODE="$9"
+LOCAL_OUTPUT_BASE="${10:-}"
+LHE_OUTPUT_DIR="${11:-}"
 
 echo "=== LHE Generation Wrapper ==="
 echo "Working directory: $(pwd)"
@@ -54,7 +56,11 @@ fi
 
 echo "Running HELAC generation..."
 cd runtime/lhe_generation
-if ! bash run_helac.sh --pool "${POOL}" --seed "${SEED}" --min-pt-conia "${MIN_PT_CONIA}" --min-pt-bonia "${MIN_PT_BONIA}" --min-pt-q "${MIN_PT_Q}" --unwevt "${UNWEVT}" --test-mode "${TEST_MODE}"; then
+HELAC_ARGS=(--pool "${POOL}" --seed "${SEED}" --min-pt-conia "${MIN_PT_CONIA}" --min-pt-bonia "${MIN_PT_BONIA}" --min-pt-q "${MIN_PT_Q}" --unwevt "${UNWEVT}" --test-mode "${TEST_MODE}")
+if [[ -n "${LHE_OUTPUT_DIR}" ]]; then
+    HELAC_ARGS+=(--output-dir "${LHE_OUTPUT_DIR}")
+fi
+if ! bash run_helac.sh "${HELAC_ARGS[@]}"; then
     echo "ERROR: HELAC generation failed" >&2
     exit 1
 fi

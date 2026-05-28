@@ -12,14 +12,12 @@ Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
 Transfer_Input_Files = $(summary_bundle_path)
 
-Output = $(LOCAL_LOG_DIR)/summary_$(Cluster)_$(Process).stdout
-Error  = $(LOCAL_LOG_DIR)/summary_$(Cluster)_$(Process).stderr
-Log    = $(LOCAL_LOG_DIR)/summary_$(Cluster)_$(Process).log
+Output = /dev/null
+Error  = /dev/null
+Log    = summary_$(Cluster)_$(Process).log
 
 request_cpus = 1
 request_memory = 1GB
 request_disk = 1GB
-
-requirements = (TARGET.Machine == "nd-16.hepthu.com")
 
 Queue 1
