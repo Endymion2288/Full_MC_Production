@@ -29,6 +29,8 @@ request_disk = $(request_disk)
 getenv = True
 +MaxRuntime = 604800
 
+requirements = (TARGET.Machine != "nd-11.hepthu.com")
+
 Environment = "HOME=/srv"
 
 # el7 container for HELAC-Onia compilation

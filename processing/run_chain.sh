@@ -1061,6 +1061,7 @@ run_raw() {
     msg_step "Step 4: RAW (DIGI + HLT)"
     
     RAW_OUTPUT="${WORKDIR}/output_RAW.root"
+    GENSIM_OUTPUT="${GENSIM_OUTPUT:-${WORKDIR}/output_GENSIM.root}"
     
     setup_cmssw12
     
@@ -1138,6 +1139,7 @@ run_reco() {
     msg_step "Step 5: RECO"
     
     RECO_OUTPUT="${WORKDIR}/output_RECO.root"
+    RAW_OUTPUT="${RAW_OUTPUT:-${WORKDIR}/output_RAW.root}"
     
     setup_cmssw12
     
@@ -1179,6 +1181,7 @@ run_miniaod() {
     msg_step "Step 6: MiniAOD"
     
     MINIAOD_OUTPUT="${WORKDIR}/output_MINIAOD.root"
+    RECO_OUTPUT="${RECO_OUTPUT:-${WORKDIR}/output_RECO.root}"
     
     setup_cmssw12
     
@@ -1424,6 +1427,24 @@ while [[ $# -gt 0 ]]; do
             STOP_AT="$2"
             shift 2
             ;;
+        --step-input|--step-input=*)
+            if [[ "$1" == *=* ]]; then
+                STEP_INPUT_URL="${1#*=}"
+                shift
+            else
+                STEP_INPUT_URL="$2"
+                shift 2
+            fi
+            ;;
+        --step-output-dir|--step-output-dir=*)
+            if [[ "$1" == *=* ]]; then
+                STEP_OUTPUT_DIR="${1#*=}"
+                shift
+            else
+                STEP_OUTPUT_DIR="$2"
+                shift 2
+            fi
+            ;;
         --max-events)
             MAX_EVENTS="$2"
             shift 2
@@ -1614,6 +1635,25 @@ for ((i=start_idx; i<=end_idx; i++)); do
 done
 msg_info "Planned steps: ${SELECTED_STEPS[*]}"
 
+# Step-input: download previous step's output from EOS before processing
+if [[ -n "${STEP_INPUT_URL:-}" ]]; then
+    step_input_local=""
+    case "${SKIP_TO}" in
+        gensim) step_input_local="${MIXED_HEPMC:-${WORKDIR}/mixed.hepmc}" ;;
+        raw)    step_input_local="${GENSIM_OUTPUT:-${WORKDIR}/output_GENSIM.root}" ;;
+        reco)   step_input_local="${RAW_OUTPUT:-${WORKDIR}/output_RAW.root}" ;;
+        miniaod) step_input_local="${RECO_OUTPUT:-${WORKDIR}/output_RECO.root}" ;;
+        ntuple) step_input_local="${MINIAOD_OUTPUT:-${WORKDIR}/output_MINIAOD.root}" ;;
+        *)      step_input_local="${WORKDIR}/step_input.dat" ;;
+    esac
+    msg_info "Fetching step input: ${STEP_INPUT_URL} -> ${step_input_local}"
+    if [[ "${STEP_INPUT_URL}" == root://* ]]; then
+        run_xrdcp --nopbar "${STEP_INPUT_URL}" "${step_input_local}" || { msg_error "Step input download failed"; exit 1; }
+    else
+        cp "${STEP_INPUT_URL}" "${step_input_local}" || { msg_error "Step input copy failed"; exit 1; }
+    fi
+fi
+
 # Run steps using the selected list (avoids index/loop drift)
 for step in "${SELECTED_STEPS[@]}"; do
     case "$step" in
@@ -1643,6 +1683,36 @@ for step in "${SELECTED_STEPS[@]}"; do
             ;;
     esac
 done
+
+# Step-output: upload output of the last step to EOS
+if [[ -n "${STEP_OUTPUT_DIR:-}" ]]; then
+    step_output_file=""
+    step_output_name=""
+    case "${STOP_AT:-${SELECTED_STEPS[-1]}}" in
+        mix)    step_output_file="${MIXED_HEPMC:-${WORKDIR}/mixed.hepmc}"
+                step_output_name="mixed.hepmc" ;;
+        gensim) step_output_file="${GENSIM_OUTPUT:-${WORKDIR}/output_GENSIM.root}"
+                step_output_name="GENSIM.root" ;;
+        raw)    step_output_file="${RAW_OUTPUT:-${WORKDIR}/output_RAW.root}"
+                step_output_name="RAW.root" ;;
+        reco)   step_output_file="${RECO_OUTPUT:-${WORKDIR}/output_RECO.root}"
+                step_output_name="RECO.root" ;;
+        miniaod) step_output_file="${MINIAOD_OUTPUT:-${WORKDIR}/output_MINIAOD.root}"
+                 step_output_name="MINIAOD.root" ;;
+        ntuple) step_output_file="${NTUPLE_OUTPUT:-${WORKDIR}/output_ntuple.root}"
+                step_output_name="ntuple.root" ;;
+    esac
+    if [[ -n "${step_output_file}" ]] && [[ -f "${step_output_file}" ]]; then
+        step_output_url="${STEP_OUTPUT_DIR}/${step_output_name}"
+        msg_info "Uploading step output: ${step_output_file} -> ${step_output_url}"
+        if [[ "${STEP_OUTPUT_DIR}" == root://* ]]; then
+            run_xrdcp --nopbar --force "${step_output_file}" "${step_output_url}" || { msg_error "Step output upload failed"; exit 1; }
+        else
+            mkdir -p "${STEP_OUTPUT_DIR}" || true
+            cp "${step_output_file}" "${step_output_url}" || { msg_error "Step output copy failed"; exit 1; }
+        fi
+    fi
+fi
 
 # If mix was requested but output not found, fail early so tests surface the issue.
 # Skip this check when cleanup removed intermediates (CLEANUP=true) or after transfer.

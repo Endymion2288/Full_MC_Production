@@ -20,4 +20,6 @@ request_cpus = 1
 request_memory = 1GB
 request_disk = 1GB
 
+requirements = (TARGET.Machine != "nd-11.hepthu.com")
+
 Queue 1

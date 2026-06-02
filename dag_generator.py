@@ -872,15 +872,15 @@ class DAGBuilder:
 
     def lhe_resource_request(self) -> Tuple[str, str, str]:
         if self.options.test_mode:
-            return "4", "8GB", "8GB"
-        return "8", "15GB", "10GB"
+            return "2", "4GB", "2GB"
+        return "2", "8GB", "2GB"
 
     def processing_resource_request(self) -> Tuple[str, str, str]:
         if os.environ.get("PREMIX_INPUT_MODE") == "localcache":
             return "4", "12GB", os.environ.get("PREMIX_LOCALCACHE_REQUEST_DISK", "80GB")
         if self.options.test_mode:
             return "4", "12GB", "20GB"
-        return "8", "20GB", "50GB"
+        return "8", "24GB", "50GB"
 
     def ensure_lhe_jobs(self, pool_name: str, required_count: int) -> None:
         """全局共享同一个 pool 的生成节点，避免跨 campaign 重复生成。"""
@@ -948,6 +948,107 @@ class DAGBuilder:
         return spec, [job_name]
 
     def add_processing_job(self, campaign_name: str, job_index: int) -> str:
+        """Generate split-step processing jobs for one campaign job."""
+        campaign = CAMPAIGNS[campaign_name]
+        input_specs: List[str] = []
+        parent_jobs: List[str] = []
+        usage_counter: Dict[str, int] = {}
+
+        for pool_name in campaign.inputs:
+            usage_index = usage_counter.get(pool_name, 0)
+            usage_counter[pool_name] = usage_index + 1
+            spec, parents = self.allocate_input_spec(pool_name, job_index, usage_index)
+            input_specs.append(spec)
+            parent_jobs.extend(parents)
+
+        eos_output_base = f"{EOS_BASE}/output/{campaign_name}/{job_index}"
+        local_base = self.options.local_output_base
+        if local_base:
+            step_output_base = f"{local_base}/output/{campaign_name}/{job_index}"
+        else:
+            step_output_base = eos_output_base
+        step_template = os.path.join(BASE_DIR, 'processing/templates/processing.sub')
+
+        steps = [
+            ("shower_mix", "shower", "mix", "", "mixed.hepmc", "2", "4GB", "2GB"),
+            ("gensim", "gensim", "gensim", "mixed.hepmc", "GENSIM.root", "2", "6GB", "2GB"),
+            ("raw", "raw", "raw", "GENSIM.root", "RAW.root", "2", "8GB", "2GB"),
+            ("reco", "reco", "reco", "RAW.root", "RECO.root", "2", "6GB", "2GB"),
+            ("miniaod", "miniaod", "miniaod", "RECO.root", "MINIAOD.root", "2", "6GB", "2GB"),
+        ]
+        if self.options.enable_ntuple:
+            steps.append(("ntuple", "ntuple", "ntuple", "MINIAOD.root", "ntuple.root", "2", "6GB", "2GB"))
+
+        step_jobs = []  # type: List[str]
+        for step_name, skip_to, stop_at, input_file, output_name, cpu, mem, disk in steps:
+            job_name = f"STEP_{step_name}_{campaign_name}_{job_index}"
+            step_input = f"{step_output_base}/{input_file}" if input_file else ""
+            step_output_dir = step_output_base
+
+            var_lines = (
+                'VARS {job} campaign="{campaign}" job_id="{job_id}" '
+                'inputs="{inputs}" modes="{modes}" analysis="{analysis}" '
+                'n_sources="{n_sources}" max_events="{max_events}" '
+                'enable_ntuple="{enable_ntuple}" cleanup="{cleanup}" '
+                'request_cpus="{request_cpus}" request_memory="{request_memory}" request_disk="{request_disk}" '
+                'processing_bundle_path="{processing_bundle_path}" '
+                'processing_bundle_name="{processing_bundle_name}" '
+                'proxy_bundle_path="{proxy_bundle_path}" proxy_bundle_name="{proxy_bundle_name}" '
+                'step_skip_to="{step_skip_to}" step_stop_at="{step_stop_at}" '
+                'step_input="{step_input}" step_output_dir="{step_output_dir}" '
+                'LOCAL_LOG_DIR="{local_log_dir}" LOCAL_OUTPUT_BASE="{local_output_base}" '
+                'PREMIX_INPUT_MODE="{premix_input_mode}" '
+                'PREMIX_REDIRECTOR="{premix_redirector}" '
+                'PREMIX_CACHE_FILES="{premix_cache_files}" '
+                'PREMIX_CACHE_REDIRECTOR="{premix_cache_redirector}" '
+                'PREMIX_LOCAL_POOL_DIR="{premix_local_pool_dir}" '
+                'PREMIX_LOCAL_POOL_FILES="{premix_local_pool_files}"'.format(
+                    job=job_name,
+                    campaign=dag_escape(campaign.name),
+                    job_id=dag_escape(job_index),
+                    inputs=dag_escape(",".join(input_specs)),
+                    modes=dag_escape(",".join(campaign.shower_modes)),
+                    analysis=dag_escape(campaign.analysis_type),
+                    n_sources=dag_escape(campaign.n_sources),
+                    max_events=dag_escape(self.options.max_events),
+                    enable_ntuple=dag_escape(bool_string(self.options.enable_ntuple)),
+                    cleanup=dag_escape(bool_string(self.options.cleanup)),
+                    request_cpus=dag_escape(cpu),
+                    request_memory=dag_escape(mem),
+                    request_disk=dag_escape(disk),
+                    processing_bundle_path=dag_escape(self.runtime_assets["processing_bundle_path"]),
+                    processing_bundle_name=dag_escape(self.runtime_assets["processing_bundle_name"]),
+                    proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
+                    proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
+                    step_skip_to=dag_escape(skip_to),
+                    step_stop_at=dag_escape(stop_at),
+                    step_input=dag_escape(step_input),
+                    step_output_dir=dag_escape(step_output_dir),
+                    local_log_dir=dag_escape(self.options.local_log_dir),
+                    local_output_base=dag_escape(self.options.local_output_base),
+                    premix_input_mode=dag_escape(os.environ.get("PREMIX_INPUT_MODE", "eoscms")),
+                    premix_redirector=dag_escape(os.environ.get("PREMIX_REDIRECTOR", "root://eoscms.cern.ch")),
+                    premix_cache_files=dag_escape(os.environ.get("PREMIX_CACHE_FILES", "1")),
+                    premix_cache_redirector=dag_escape(os.environ.get("PREMIX_CACHE_REDIRECTOR", os.environ.get("PREMIX_REDIRECTOR", "root://eoscms.cern.ch"))),
+                    premix_local_pool_dir=dag_escape(os.environ.get("PREMIX_LOCAL_POOL_DIR", "/home/storage29/users/xingcheng/premix_pools/Run3Summer22DRPremix_10")),
+                    premix_local_pool_files=dag_escape(os.environ.get("PREMIX_LOCAL_POOL_FILES", "0")),
+                )
+            )
+            self.dag_lines.append(f"JOB {job_name} {step_template}")
+            self.dag_lines.append(var_lines)
+            self.dag_lines.append(f"RETRY {job_name} 1")
+            step_jobs.append(job_name)
+
+            # Chain steps: previous step is parent of current
+            if len(step_jobs) > 1:
+                self.dag_lines.append(f"PARENT {step_jobs[-2]} CHILD {job_name}")
+            elif parent_jobs:
+                self.dag_lines.append(f"PARENT {' '.join(parent_jobs)} CHILD {job_name}")
+
+        return step_jobs[-1] if step_jobs else ""
+
+    def _add_processing_job_monolithic(self, campaign_name: str, job_index: int) -> str:
+        """(legacy) single monolithic processing job."""
         campaign = CAMPAIGNS[campaign_name]
         input_specs: List[str] = []
         parent_jobs: List[str] = []
