@@ -108,7 +108,7 @@ run_logged() {
         return 0
     fi
 
-    rc=$?
+    local rc=$?
     msg_error "${label} 失败 (rc=${rc})"
     show_log_tail "${label} stderr" "${stderr_log}" 80 >&2
     show_log_tail "${label} stdout" "${stdout_log}" 40
@@ -530,14 +530,40 @@ build_crystalball_addon_if_needed() {
     local helac_dir="$1"
     local addon_dir="${helac_dir}/addon/pp_psiX_CrystalBall"
     local exe="${addon_dir}/bin/HO_pp_psiX_CrystalBall"
+    local libdir="${helac_dir}/lib"
 
     if [[ -x "${exe}" ]]; then
         return 0
     fi
 
+    # Build required libraries if missing
+    local fc="${FC:-gfortran}"
+    for lib in libpdf.a libqedps.a libminuit.a libhbook.a libfjcore.a; do
+        if [[ ! -f "${libdir}/${lib}" ]]; then
+            msg_info "Building ${lib}..."
+            case "${lib}" in
+                libpdf.a)
+                    (cd "${helac_dir}/pdf" && ${fc} -c *.f *.F 2>/dev/null && ar rcs "${libdir}/libpdf.a" *.o && rm -f *.o) || msg_warn "pdf build failed"
+                    ;;
+                libqedps.a)
+                    (cd "${helac_dir}/shower/QEDPS" && ${fc} -c QEDPS.f 2>/dev/null && ar rcs "${libdir}/libqedps.a" QEDPS.o && rm -f QEDPS.o) || msg_warn "qedps build failed"
+                    ;;
+                libminuit.a)
+                    make -C "${helac_dir}/cernlib/minuit" -f makefile_minuit FC="${fc}" 2>&1 || msg_warn "minuit build failed"
+                    ;;
+                libhbook.a)
+                    (cd "${helac_dir}/analysis/hbook" && ${fc} -c *.f 2>/dev/null && ar rcs "${libdir}/libhbook.a" *.o && rm -f *.o) || msg_warn "hbook build failed"
+                    ;;
+                libfjcore.a)
+                    make -C "${helac_dir}/jets/fjcore" FC="${fc}" 2>&1 || msg_warn "fjcore build failed"
+                    ;;
+            esac
+        fi
+    done
+
     mkdir -p "${helac_dir}/bin" "${addon_dir}/bin" "${addon_dir}/obj" "${addon_dir}/mod" "${addon_dir}/output" "${addon_dir}/tmp"
     msg_info "Building pp_psiX_CrystalBall addon..."
-    if ! run_logged "build_pp_psiX_CrystalBall" make -C "${addon_dir}" -f makefile_pp_psiX_CrystalBall HODIR="${helac_dir}" FC="${FC:-gfortran}" all; then
+    if ! run_logged "build_pp_psiX_CrystalBall" make -C "${addon_dir}" -f makefile_pp_psiX_CrystalBall HODIR="${helac_dir}" FC="${fc}" all; then
         msg_error "CrystalBall addon build failed"
         return 1
     fi
@@ -562,7 +588,7 @@ patch_crystalball_addon_seed_init() {
     fi
 
     msg_info "Patching CrystalBall addon random seed initialization..."
-    sed -i "/INTEGER::IDBMUP1,IDBMUP2,IDWTUP/a\\${include_line}" "${source_file}"
+    sed -i "/INTEGER::IDBMUP1,IDBMUP2,IDWTUP[[:space:]]*$/a\\${include_line}" "${source_file}"
     if ! grep -q 'RANDA_init.inc' "${source_file}"; then
         msg_error "Failed to patch CrystalBall addon seed initialization"
         return 1
