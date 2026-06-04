@@ -772,6 +772,7 @@ cd HELAC-Onia-2.7.6
 
 if pool_uses_crystalball_addon "${POOL_NAME}"; then
     prepare_crystalball_addon_input "$(pwd)" "${POOL_NAME}"
+    patch_crystalball_addon_seed_init "$(pwd)"
     build_crystalball_addon_if_needed "$(pwd)"
 
     msg_info "Running HELAC-Onia CrystalBall addon..."

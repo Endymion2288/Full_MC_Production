@@ -31,7 +31,7 @@ getenv = True
 
 requirements = (TARGET.Machine != "nd-11.hepthu.com")
 
-Environment = "HOME=/srv"
+Environment = "HOME=/srv LOCAL_OUTPUT_BASE=$(LOCAL_OUTPUT_BASE)"
 
 # el7 container for HELAC-Onia compilation
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64"

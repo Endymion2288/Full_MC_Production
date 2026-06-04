@@ -511,7 +511,7 @@ run_in_cmssw12_container() {
     local siteconf_overlay
     tmp_script=$(mktemp --suffix=_cmssw12_cmd.sh)
     scratch_root=$(dirname "${WORKDIR}")
-    siteconf_overlay="${scratch_root}/cms_siteconf_overlay"
+    siteconf_overlay="${WORKDIR}/cms_siteconf_overlay"
     rm -rf "${siteconf_overlay}"
     mkdir -p "${siteconf_overlay}"
     cp -a /cvmfs/cms.cern.ch/SITECONF/T2_CN_Beijing "${siteconf_overlay}/"
@@ -564,6 +564,41 @@ ${cmd_text}
     fi
 
     run_logged "${label}" "$@"
+}
+
+validate_root_file() {
+    local label="$1"
+    local file_path="$2"
+
+    if [[ ! -s "${file_path}" ]]; then
+        msg_error "${label} output missing or empty: ${file_path}"
+        return 1
+    fi
+
+    local checker="${WORKDIR}/validate_root_file.py"
+    cat > "${checker}" <<'PYCHECK'
+import sys
+import ROOT
+
+path = sys.argv[1]
+f = ROOT.TFile.Open(path)
+if not f:
+    print(f"ROOT validation failed: could not open {path}", file=sys.stderr)
+    sys.exit(2)
+if f.IsZombie():
+    print(f"ROOT validation failed: zombie file {path}", file=sys.stderr)
+    sys.exit(3)
+if f.TestBit(ROOT.TFile.kRecovered):
+    print(f"ROOT validation failed: recovered/incompletely closed file {path}", file=sys.stderr)
+    sys.exit(4)
+if f.GetNkeys() <= 0:
+    print(f"ROOT validation failed: no keys in {path}", file=sys.stderr)
+    sys.exit(5)
+print(f"ROOT validation OK: {path} keys={f.GetNkeys()}")
+sys.exit(0)
+PYCHECK
+
+    run_cmssw12_command "validate_root_${label}" python3 "${checker}" "${file_path}"
 }
 
 # Run command inside el9 container using apptainer
@@ -733,6 +768,12 @@ run_cmsrun_cmssw15() {
     shift
     
     msg_info "Running cmsRun in el9 container for CMSSW_15..."
+
+    local siteconf_overlay="${WORKDIR}/cms_siteconf_overlay"
+    rm -rf "${siteconf_overlay}"
+    mkdir -p "${siteconf_overlay}"
+    cp -a /cvmfs/cms.cern.ch/SITECONF/T2_CN_Beijing "${siteconf_overlay}/" 2>/dev/null || true
+    ln -sf T2_CN_Beijing "${siteconf_overlay}/local" 2>/dev/null || true
     
     # Build the full command with arguments
     local tmp_script=$(mktemp --suffix=_cmsrun.sh)
@@ -752,6 +793,7 @@ SCRIPT_EOF
         --bind /cvmfs:/cvmfs \
         --bind /tmp:/tmp \
         --bind "${WORKDIR}:${WORKDIR}" \
+        --bind "${siteconf_overlay}:/cvmfs/cms.cern.ch/SITECONF" \
         --env "X509_USER_PROXY=${X509_USER_PROXY:-}" \
         --env "HOME=${HOME}" \
         "${EL9_CONTAINER}" \
@@ -1052,6 +1094,7 @@ run_gensim() {
         msg_error "GEN-SIM failed: ${GENSIM_OUTPUT} not created"
         return 1
     fi
+    validate_root_file "GENSIM" "${GENSIM_OUTPUT}" || return 1
     
     msg_ok "GEN-SIM complete: ${GENSIM_OUTPUT}"
 }
@@ -1068,7 +1111,7 @@ run_raw() {
     local cfg_file=$(mktemp --suffix=_raw_cfg.py)
     local raw_threads="${RAW_THREADS:-1}"
     local raw_streams="${RAW_STREAMS:-1}"
-    local raw_watchdog_timeout="${RAW_WATCHDOG_TIMEOUT:-7200s}"
+    local raw_watchdog_timeout="${RAW_WATCHDOG_TIMEOUT:-21600s}"
     local raw_watchdog_kill_after="${RAW_WATCHDOG_KILL_AFTER:-300s}"
     
     local premix_mode="${PREMIX_INPUT_MODE:-eoscms}"
@@ -1130,6 +1173,7 @@ run_raw() {
         msg_error "RAW step failed: ${RAW_OUTPUT} not created"
         return 1
     fi
+    validate_root_file "RAW" "${RAW_OUTPUT}" || return 1
     
     msg_ok "RAW complete: ${RAW_OUTPUT}"
 }
@@ -1145,7 +1189,10 @@ run_reco() {
     
     local cfg_file=$(mktemp --suffix=_reco_cfg.py)
     
-    msg_info "Generating RECO config..."
+    local reco_threads="${RECO_THREADS:-2}"
+    local reco_streams="${RECO_STREAMS:-2}"
+
+    msg_info "Generating RECO config with nThreads=${reco_threads}, nStreams=${reco_streams}..."
     run_cmssw12_command "cmsDriver_step3_reco" cmsDriver.py step3 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
@@ -1159,7 +1206,7 @@ run_reco() {
         --geometry DB:Extended \
         -n "${MAX_EVENTS}" \
         --customise Configuration/DataProcessing/Utils.addMonitoring \
-        --nThreads 4 --nStreams 4 \
+        --nThreads "${reco_threads}" --nStreams "${reco_streams}" \
         --filein "file:${RAW_OUTPUT}" \
         --fileout "file:${RECO_OUTPUT}"
     
@@ -1172,6 +1219,7 @@ run_reco() {
         msg_error "RECO step failed: ${RECO_OUTPUT} not created"
         return 1
     fi
+    validate_root_file "RECO" "${RECO_OUTPUT}" || return 1
     
     msg_ok "RECO complete: ${RECO_OUTPUT}"
 }
@@ -1187,7 +1235,10 @@ run_miniaod() {
     
     local cfg_file=$(mktemp --suffix=_miniaod_cfg.py)
     
-    msg_info "Generating MiniAOD config..."
+    local miniaod_threads="${MINIAOD_THREADS:-2}"
+    local miniaod_streams="${MINIAOD_STREAMS:-2}"
+
+    msg_info "Generating MiniAOD config with nThreads=${miniaod_threads}, nStreams=${miniaod_streams}..."
     run_cmssw12_command "cmsDriver_step4_miniaod" cmsDriver.py step4 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
@@ -1199,7 +1250,7 @@ run_miniaod() {
         --geometry DB:Extended \
         -n "${MAX_EVENTS}" \
         --customise Configuration/DataProcessing/Utils.addMonitoring \
-        --nThreads 4 --nStreams 4 \
+        --nThreads "${miniaod_threads}" --nStreams "${miniaod_streams}" \
         --filein "file:${RECO_OUTPUT}" \
         --fileout "file:${MINIAOD_OUTPUT}"
     
@@ -1212,6 +1263,7 @@ run_miniaod() {
         msg_error "MiniAOD step failed: ${MINIAOD_OUTPUT} not created"
         return 1
     fi
+    validate_root_file "MINIAOD" "${MINIAOD_OUTPUT}" || return 1
     
     msg_ok "MiniAOD complete: ${MINIAOD_OUTPUT}"
 }
@@ -1263,6 +1315,7 @@ run_ntuple() {
         msg_error "Ntuple step failed: ${NTUPLE_OUTPUT} not created"
         return 1
     fi
+    validate_root_file "NTUPLE" "${NTUPLE_OUTPUT}" || return 1
     
     msg_ok "Ntuple complete: ${NTUPLE_OUTPUT}"
 }
