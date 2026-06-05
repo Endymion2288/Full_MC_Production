@@ -21,7 +21,7 @@ import tarfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -950,13 +950,23 @@ def validate_efficiency_campaigns(campaign_names: Sequence[str]) -> None:
 
 
 def build_ntuple_manifest(
-    campaign_names: Sequence[str],
-    jobs_per_campaign: int,
+    campaign_names: Sequence[str] = (),
+    jobs_per_campaign: int = 0,
     local_output_base: str = "",
+    campaign_jobs_map: Optional[Dict[str, List[int]]] = None,
 ) -> Dict[str, List[str]]:
-    """Build the downstream multileppat efficiency file manifest."""
+    """Build the downstream multileppat efficiency file manifest.
 
+    当提供了 campaign_jobs_map 时，使用其中的 job index 列表；
+    否则回退到原有的 range(jobs_per_campaign) 行为。
+    """
     manifest: Dict[str, List[str]] = OrderedDict()
+
+    def _job_indices(name: str) -> List[int]:
+        if campaign_jobs_map is not None:
+            return campaign_jobs_map.get(name, [])
+        return list(range(jobs_per_campaign))
+
     for campaign_name in campaign_names:
         campaign = CAMPAIGNS[campaign_name]
         if campaign.analysis_type != "JJP":
@@ -964,12 +974,12 @@ def build_ntuple_manifest(
         if local_output_base:
             manifest[campaign_name] = [
                 os.path.join(local_output_base, "output", campaign_name, str(job_index), "output_ntuple.root")
-                for job_index in range(jobs_per_campaign)
+                for job_index in _job_indices(campaign_name)
             ]
         else:
             manifest[campaign_name] = [
                 f"{EOS_BASE}/output/{campaign_name}/{job_index}/output_ntuple.root"
-                for job_index in range(jobs_per_campaign)
+                for job_index in _job_indices(campaign_name)
             ]
     return manifest
 
@@ -1354,6 +1364,66 @@ def prepare_runtime_assets(
     return assets
 
 
+def prepare_ntuple_only_assets(
+    output_dir: str,
+    cmssw15_runtime_tarball: Optional[str] = None,
+) -> Dict[str, str]:
+    """生成仅含 ntuple runtime 的 bundle（无 LHE/processing/summary）。"""
+    ensure_dir(output_dir)
+    assets: Dict[str, str] = OrderedDict()
+
+    analysis_package_items: List[Tuple[str, str]] = []
+    runtime_tarball = resolve_cmssw15_runtime_tarball(cmssw15_runtime_tarball)
+    if runtime_tarball:
+        analysis_package_items.append(
+            (
+                runtime_tarball,
+                os.path.join(
+                    "runtime",
+                    "common",
+                    "packages",
+                    CMSSW15_RUNTIME_TARBALL_NAME,
+                ),
+            )
+        )
+        assets["cmssw15_runtime_tarball_path"] = runtime_tarball
+        assets["cmssw15_runtime_tarball_name"] = CMSSW15_RUNTIME_TARBALL_NAME
+    elif os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
+        package_path, package_name = build_tpsonia2mumu_package(output_dir)
+        analysis_package_items.append(
+            (
+                package_path,
+                os.path.join("runtime", "common", "packages", package_name),
+            )
+        )
+        assets["tpsonia2mumu_package_path"] = package_path
+        assets["tpsonia2mumu_package_name"] = package_name
+    else:
+        raise FileNotFoundError(
+            "需要打包 TPS-Onia2MuMu，但既没有预编译 CMSSW15 runtime tarball，"
+            "也没有初始化 submodule。请提供 --cmssw15-runtime-tarball，"
+            "或执行 `git submodule update --init --recursive`。"
+        )
+
+    ntuple_items: List[Tuple[str, str]] = [
+        (os.path.join(BASE_DIR, "processing", "run_chain.sh"), "runtime/processing/run_chain.sh"),
+        (
+            os.path.join(BASE_DIR, "common", "cmssw_configs"),
+            "runtime/common/cmssw_configs",
+        ),
+        (os.path.join(BASE_DIR, "common", "octet_pdg.py"), "runtime/common/octet_pdg.py"),
+    ]
+    ntuple_items.extend(analysis_package_items)
+
+    ntuple_bundle_name = BUNDLE_NAMES["ntuple"]
+    ntuple_bundle_path = os.path.join(output_dir, ntuple_bundle_name)
+    build_bundle(ntuple_bundle_path, ntuple_items)
+    assets["ntuple_bundle_path"] = ntuple_bundle_path
+    assets["ntuple_bundle_name"] = ntuple_bundle_name
+
+    return assets
+
+
 class DAGBuilder:
     """负责生成 DAG 内容和元数据。"""
 
@@ -1552,11 +1622,19 @@ class DAGBuilder:
             self.dag_lines.append(f"PARENT {' '.join(parent_jobs)} CHILD {job_name}")
         return job_name
 
-    def add_ntuple_job(self, campaign_name: str, job_index: int, parent_job: str) -> str:
+    def add_ntuple_job(
+        self,
+        campaign_name: str,
+        job_index: int,
+        parent_job: Optional[str] = None,
+        miniaod_input: Optional[str] = None,
+    ) -> str:
         campaign = CAMPAIGNS[campaign_name]
         job_name = f"NTUPLE_{campaign_name}_{job_index}"
         request_cpus, request_memory, request_disk = self.ntuple_resource_request()
-        miniaod_input = f"{EOS_OUTPUT}/{campaign.name}/{job_index}/output_MINIAOD.root"
+        if miniaod_input is None:
+            miniaod_input = f"{EOS_OUTPUT}/{campaign.name}/{job_index}/output_MINIAOD.root"
+        local_output_base = self.options.local_output_base
         self.dag_lines.append(f"JOB {job_name} {os.path.join(BASE_DIR, 'processing/templates/ntuple.sub')}")
         self.dag_lines.append(f"CATEGORY {job_name} ntuple")
         self.dag_lines.append(
@@ -1564,6 +1642,7 @@ class DAGBuilder:
             "analysis=\"{analysis}\" max_events=\"{max_events}\" cleanup=\"{cleanup}\" "
             "efficiency_ntuple=\"{efficiency_ntuple}\" "
             "miniaod_input=\"{miniaod_input}\" "
+            "local_output_base=\"{local_output_base}\" "
             "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
             "ntuple_bundle_path=\"{ntuple_bundle_path}\" ntuple_bundle_name=\"{ntuple_bundle_name}\" "
             "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
@@ -1576,6 +1655,7 @@ class DAGBuilder:
                 cleanup=dag_escape(bool_string(self.options.cleanup)),
                 efficiency_ntuple=dag_escape(bool_string(self.options.efficiency_ntuple)),
                 miniaod_input=dag_escape(miniaod_input),
+                local_output_base=dag_escape(local_output_base),
                 request_cpus=dag_escape(request_cpus),
                 request_memory=dag_escape(request_memory),
                 request_disk=dag_escape(request_disk),
@@ -1587,7 +1667,8 @@ class DAGBuilder:
             )
         )
         self.dag_lines.append(f"RETRY {job_name} 1")
-        self.dag_lines.append(f"PARENT {parent_job} CHILD {job_name}")
+        if parent_job is not None:
+            self.dag_lines.append(f"PARENT {parent_job} CHILD {job_name}")
         return job_name
 
     def build(self, campaign_names: Sequence[str], dag_filename: str) -> str:
@@ -1672,6 +1753,73 @@ class DAGBuilder:
                         campaign_names,
                         self.options.jobs_per_campaign,
                         self.options.local_output_base,
+                    )
+                    if self.options.efficiency_ntuple
+                    else OrderedDict(),
+                ),
+            ]
+        )
+        return "\n".join(self.dag_lines)
+
+    def build_ntuple_only(
+        self,
+        campaign_jobs_map: Dict[str, List[int]],
+        miniaod_input_fn: Callable[[str, int], str],
+        dag_filename: str,
+    ) -> str:
+        """生成仅含 ntuple 节点的 DAG（无 LHE / processing / summary 节点）。"""
+        dagman_config_path = os.path.join(self.output_dir, "dagman.config")
+        campaign_names = list(campaign_jobs_map.keys())
+
+        self.dag_lines = [
+            "# ================================================",
+            "# workbook_v2 Ntuple-only DAG",
+            f"# 生成时间: {datetime.now().isoformat()}",
+            f"# Campaigns: {', '.join(campaign_names)}",
+            "# ================================================",
+            "",
+            f"CONFIG {dagman_config_path}",
+            "",
+        ]
+        if self.options.maxjobs_ntuple > 0:
+            self.dag_lines.append(f"MAXJOBS ntuple {self.options.maxjobs_ntuple}")
+        self.dag_lines.append("")
+
+        for campaign_name in campaign_names:
+            campaign = CAMPAIGNS[campaign_name]
+            job_indices = campaign_jobs_map.get(campaign_name, [])
+            self.dag_lines.append(f"# -------- Campaign: {campaign.name} --------")
+            self.dag_lines.append(f"# {campaign.description}")
+            self.dag_lines.append(f"# Jobs: {len(job_indices)}")
+            if campaign.notes:
+                self.dag_lines.append(f"# 备注: {campaign.notes}")
+            for job_index in job_indices:
+                miniaod_path = miniaod_input_fn(campaign_name, job_index)
+                self.add_ntuple_job(
+                    campaign_name, job_index,
+                    parent_job=None,
+                    miniaod_input=miniaod_path,
+                )
+            self.dag_lines.append("")
+
+        # 无 FINAL SUMMARY 节点（没有 processing job 需要汇总）
+
+        self.metadata = OrderedDict(
+            [
+                ("created_at", datetime.now().isoformat()),
+                ("dag_path", os.path.join(self.output_dir, dag_filename)),
+                ("dagman_config_path", dagman_config_path),
+                ("options", self.options.to_dict()),
+                ("runtime_assets", self.runtime_assets),
+                ("campaigns", [CAMPAIGNS[name].to_dict() for name in campaign_names]),
+                ("ntuple_only", True),
+                ("campaign_jobs", {name: list(indices) for name, indices in campaign_jobs_map.items()}),
+                (
+                    "ntuple_manifest",
+                    build_ntuple_manifest(
+                        campaign_names,
+                        campaign_jobs_map=campaign_jobs_map,
+                        local_output_base=self.options.local_output_base,
                     )
                     if self.options.efficiency_ntuple
                     else OrderedDict(),
@@ -1871,6 +2019,175 @@ def validate_environment(
 
     print("\n校验结束")
     return exit_code
+
+
+def discover_ntuple_jobs(
+    miniaod_dir: str,
+    campaign_names: Sequence[str],
+    filename: str = "MINIAOD.root",
+    max_jobs: int = 0,
+) -> Dict[str, List[int]]:
+    """扫描本地目录结构，找到可用的 MiniAOD 文件及其 job index。
+
+    期望结构：{miniaod_dir}/{campaign_name}/{job_index}/{filename}
+    返回 campaign_name -> 已排序 job index 列表 的映射。
+    """
+    result: Dict[str, List[int]] = OrderedDict()
+    for campaign_name in campaign_names:
+        campaign_dir = os.path.join(miniaod_dir, campaign_name)
+        if not os.path.isdir(campaign_dir):
+            print(f"警告: campaign 目录不存在: {campaign_dir}")
+            continue
+        indices: List[int] = []
+        for entry in os.listdir(campaign_dir):
+            try:
+                idx = int(entry)
+            except ValueError:
+                continue
+            job_path = os.path.join(campaign_dir, entry)
+            if not os.path.isdir(job_path):
+                continue
+            miniaod_path = os.path.join(job_path, filename)
+            if os.path.isfile(miniaod_path):
+                indices.append(idx)
+        indices.sort()
+        if max_jobs > 0:
+            indices = indices[:max_jobs]
+        if indices:
+            result[campaign_name] = indices
+        else:
+            print(f"警告: campaign {campaign_name} 中没有找到有效的 {filename} 文件")
+    return result
+
+
+def execute_ntuple_only_generation(
+    campaign_names: Sequence[str],
+    miniaod_dir: str,
+    miniaod_base_url: str,
+    miniaod_filename: str,
+    output_dir: str,
+    dag_filename: str,
+    options: WorkflowOptions,
+    jobs: int,
+    dry_run: bool,
+) -> int:
+    """生成仅含 ntuple 重跑节点的 DAG（从已有 MiniAOD 出发）。"""
+    output_dir = os.path.abspath(output_dir)
+    if not options.local_log_dir:
+        options.local_log_dir = os.path.join(output_dir, "logs")
+    if not options.log_root:
+        options.log_root = options.local_log_dir
+
+    if not dry_run:
+        ensure_submit_visible_output_dir(output_dir)
+        ensure_dir(options.local_log_dir)
+        if options.log_root != options.local_log_dir:
+            ensure_dir(options.log_root)
+
+    use_miniaod_dir = bool(miniaod_dir)
+    use_miniaod_base_url = bool(miniaod_base_url)
+
+    if use_miniaod_dir and use_miniaod_base_url:
+        print("错误: --miniaod-dir 和 --miniaod-base-url 不能同时使用", file=sys.stderr)
+        return 1
+    if not use_miniaod_dir and not use_miniaod_base_url:
+        print("错误: 必须指定 --miniaod-dir 或 --miniaod-base-url", file=sys.stderr)
+        return 1
+
+    # Resolve job indices
+    if use_miniaod_dir:
+        campaign_jobs_map = discover_ntuple_jobs(
+            miniaod_dir, campaign_names, miniaod_filename, max_jobs=jobs,
+        )
+    else:
+        if jobs <= 0:
+            print("错误: 使用 --miniaod-base-url 时必须提供 --jobs", file=sys.stderr)
+            return 1
+        campaign_jobs_map = OrderedDict(
+            (name, list(range(jobs))) for name in campaign_names
+        )
+
+    if not campaign_jobs_map:
+        print("错误: 没有任何可用的 ntuple job（未找到 MiniAOD 文件）", file=sys.stderr)
+        return 1
+
+    total_jobs = sum(len(indices) for indices in campaign_jobs_map.values())
+    print(f"发现 {total_jobs} 个 ntuple job，分布在 {len(campaign_jobs_map)} 个 campaign")
+
+    # MiniAOD 输入路径工厂
+    def miniaod_input_fn(campaign_name: str, job_index: int) -> str:
+        if use_miniaod_dir:
+            raw_path = os.path.join(miniaod_dir, campaign_name, str(job_index), miniaod_filename)
+            return f"file:{raw_path}"
+        else:
+            base = miniaod_base_url.rstrip("/")
+            return f"{base}/{campaign_name}/{job_index}/{miniaod_filename}"
+
+    # 准备 runtime assets（仅 ntuple bundle + proxy）
+    runtime_assets: Dict[str, str]
+    if dry_run:
+        runtime_assets = {
+            "ntuple_bundle_path": "<dry-run>/ntuple_runtime_bundle.tar.gz",
+            "ntuple_bundle_name": BUNDLE_NAMES["ntuple"],
+            "proxy_bundle_path": "<dry-run>/proxy_bundle.tar.gz",
+            "proxy_bundle_name": BUNDLE_NAMES["proxy"],
+        }
+    else:
+        runtime_assets = prepare_ntuple_only_assets(
+            output_dir,
+            cmssw15_runtime_tarball=options.cmssw15_runtime_tarball,
+        )
+        proxy_bundle_path, proxy_bundle_name = build_proxy_bundle(output_dir, options.proxy_path)
+        runtime_assets["proxy_bundle_path"] = proxy_bundle_path
+        runtime_assets["proxy_bundle_name"] = proxy_bundle_name
+
+    # 构建 DAG
+    builder = DAGBuilder(
+        output_dir=output_dir,
+        options=options,
+        existing_pools=OrderedDict(),
+        pool_requirements=OrderedDict(),
+        runtime_assets=runtime_assets,
+    )
+    dag_content = builder.build_ntuple_only(
+        campaign_jobs_map=campaign_jobs_map,
+        miniaod_input_fn=miniaod_input_fn,
+        dag_filename=dag_filename,
+    )
+
+    if dry_run:
+        print(dag_content)
+        return 0
+
+    dag_path, config_path, metadata_path = write_generated_files(
+        output_dir=output_dir,
+        dag_filename=dag_filename,
+        dag_content=dag_content,
+        dagman_config_content=render_dagman_config(options),
+        metadata=builder.metadata,
+    )
+
+    manifest_path = ""
+    if options.efficiency_ntuple:
+        manifest_path = write_ntuple_manifest(
+            output_dir,
+            build_ntuple_manifest(
+                campaign_names=list(campaign_jobs_map.keys()),
+                campaign_jobs_map=campaign_jobs_map,
+                local_output_base=options.local_output_base,
+            ),
+        )
+
+    print("Ntuple-only DAG 生成完成")
+    print(f"  - DAG:              {dag_path}")
+    print(f"  - DAGMan 配置:      {config_path}")
+    print(f"  - 元数据:           {metadata_path}")
+    if manifest_path:
+        print(f"  - Ntuple manifest:  {manifest_path}")
+    print(f"  - Machine env:      {options.machine_env.name} ({options.machine_env.submit_host})")
+    print(f"  - Total ntuple jobs: {total_jobs}")
+    print(f"  - 提交命令:          condor_submit_dag {dag_path}")
+    return 0
 
 
 def execute_generation(
@@ -2201,18 +2518,19 @@ def execute_hepjob_delegate(args: argparse.Namespace) -> int:
     for campaign_arg in args.campaign:
         command.extend(["--campaign", campaign_arg])
 
-    command.extend(["--jobs", str(args.jobs)])
-    command.extend(["--output-dir", args.output_dir])
-    command.extend(["--max-events", str(args.max_events)])
-    command.extend(["--proxy-path", args.proxy_path])
-    command.extend(["--group", args.hepjob_group])
+    if args.command in {"generate", "generate-test"}:
+        command.extend(["--jobs", str(args.jobs)])
+        command.extend(["--output-dir", args.output_dir])
+        command.extend(["--max-events", str(args.max_events)])
+        command.extend(["--proxy-path", args.proxy_path])
+        command.extend(["--group", args.hepjob_group])
 
-    if args.enable_ntuple:
-        command.append("--enable-ntuple")
-    else:
-        command.append("--disable-ntuple")
-    if args.efficiency_ntuple:
-        command.append("--efficiency-ntuple")
+        if args.enable_ntuple:
+            command.append("--enable-ntuple")
+        else:
+            command.append("--disable-ntuple")
+        if args.efficiency_ntuple:
+            command.append("--efficiency-ntuple")
 
     if args.command == "generate":
         if args.cleanup:
@@ -2227,6 +2545,28 @@ def execute_hepjob_delegate(args: argparse.Namespace) -> int:
             command.append("--force-generate-lhe")
         if args.lhe_unwevt is not None:
             command.extend(["--lhe-unwevt", str(args.lhe_unwevt)])
+        command.extend(["--walltime", args.hepjob_walltime])
+
+    if args.command == "generate-ntuple-only":
+        command.extend(["--jobs", str(args.jobs)])
+        command.extend(["--output-dir", args.output_dir])
+        command.extend(["--max-events", str(args.max_events)])
+        command.extend(["--proxy-path", args.proxy_path])
+        command.extend(["--group", args.hepjob_group])
+        if args.efficiency_ntuple:
+            command.append("--efficiency-ntuple")
+        if args.cleanup:
+            command.append("--cleanup")
+        else:
+            command.append("--no-cleanup")
+        if args.miniaod_dir:
+            command.extend(["--miniaod-dir", args.miniaod_dir])
+        if args.miniaod_base_url:
+            command.extend(["--miniaod-base-url", args.miniaod_base_url])
+        if args.miniaod_filename:
+            command.extend(["--miniaod-filename", args.miniaod_filename])
+        if args.local_output_base:
+            command.extend(["--local-output-base", args.local_output_base])
         command.extend(["--walltime", args.hepjob_walltime])
 
     print("Delegating to HepJob backend:")
@@ -2553,6 +2893,87 @@ def build_parser() -> argparse.ArgumentParser:
     )
     matrix_parser.add_argument("--dry-run", action="store_true", help="只打印 DAG，不写文件。")
 
+    ntuple_only_parser = subparsers.add_parser(
+        "generate-ntuple-only",
+        help="从已有 MiniAOD 文件生成仅含 ntuple 重跑节点的 DAG",
+    )
+    ntuple_only_parser.add_argument(
+        "--machine-env",
+        choices=machine_env_choices(),
+        default="auto",
+        help="运行环境选择。",
+    )
+    ntuple_only_parser.add_argument(
+        "--campaign",
+        action="append",
+        default=None,
+        help="可重复指定，支持 ALL/JJP_ALL/JUP_ALL 或逗号分隔。未指定时从 --miniaod-dir 自动发现。",
+    )
+    ntuple_only_parser.add_argument(
+        "--miniaod-dir",
+        default="",
+        help="本地 MiniAOD 基础目录，包含 campaign_name/job_index/MINIAOD.root 结构。",
+    )
+    ntuple_only_parser.add_argument(
+        "--miniaod-base-url",
+        default="",
+        help="远端 MiniAOD URL 基础 (e.g. root://cceos.ihep.ac.cn//eos/.../output)，与 --jobs 配合使用。",
+    )
+    ntuple_only_parser.add_argument(
+        "--miniaod-filename",
+        default="MINIAOD.root",
+        help="MiniAOD 文件名（默认: MINIAOD.root）。",
+    )
+    ntuple_only_parser.add_argument(
+        "--jobs",
+        type=int,
+        default=0,
+        help="每个 campaign 的 job 数；用于 --miniaod-base-url 时必填；用于 --miniaod-dir 时可限制发现数量。",
+    )
+    ntuple_only_parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="输出目录。")
+    ntuple_only_parser.add_argument("--output", default="ntuple_only.dag", help="输出 DAG 文件名。")
+    ntuple_only_parser.add_argument("--max-events", type=int, default=-1, help="ntuple 节点的 max-events。")
+    ntuple_only_parser.add_argument(
+        "--efficiency-ntuple",
+        action="store_true",
+        help="生成 multileppat 效率 ntuple，并写出 ntuple manifest。",
+    )
+    ntuple_only_parser.add_argument(
+        "--cleanup", dest="cleanup", action="store_true", default=True,
+        help="作业结束后清理中间文件。",
+    )
+    ntuple_only_parser.add_argument(
+        "--no-cleanup", dest="cleanup", action="store_false",
+        help="保留 worker 节点上的中间文件。",
+    )
+    ntuple_only_parser.add_argument(
+        "--local-output-base",
+        default="",
+        help="本地输出基目录；会通过 LOCAL_OUTPUT_BASE 环境变量传递给 worker。",
+    )
+    ntuple_only_parser.add_argument(
+        "--proxy-path",
+        default=detect_proxy_path(),
+        help="X509 代理路径；默认自动探测。",
+    )
+    ntuple_only_parser.add_argument(
+        "--local-log-dir", default="",
+        help="本地 HTCondor 日志目录。",
+    )
+    ntuple_only_parser.add_argument(
+        "--log-root", default="",
+        help="HTCondor stdout/stderr/event log 输出目录。",
+    )
+    ntuple_only_parser.add_argument(
+        "--maxjobs-ntuple", type=int, default=30,
+        help="DAGMan ntuple category throttle。",
+    )
+    ntuple_only_parser.add_argument(
+        "--cmssw15-runtime-tarball", default=None,
+        help="预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball。",
+    )
+    ntuple_only_parser.add_argument("--dry-run", action="store_true", help="只打印 DAG，不写文件。")
+
     return parser
 
 
@@ -2574,6 +2995,7 @@ def normalize_args(argv: Sequence[str]) -> Sequence[str]:
         "generate",
         "generate-test",
         "generate-helac-matrix",
+        "generate-ntuple-only",
     }:
         return argv
 
@@ -2688,6 +3110,74 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             output_dir=args.output_dir,
             dag_filename=args.output,
             options=options,
+            dry_run=args.dry_run,
+        )
+
+    if args.command == "generate-ntuple-only":
+        machine_env = resolve_machine_env(args.machine_env)
+
+        # Resolve campaign names
+        if args.campaign:
+            campaign_names = expand_campaign_selection(args.campaign)
+        elif args.miniaod_dir:
+            # Auto-discover campaigns from directory
+            if not os.path.isdir(args.miniaod_dir):
+                parser.error(f"--miniaod-dir 目录不存在: {args.miniaod_dir}")
+            campaign_names = sorted([
+                name for name in os.listdir(args.miniaod_dir)
+                if os.path.isdir(os.path.join(args.miniaod_dir, name))
+            ])
+            if not campaign_names:
+                parser.error(f"--miniaod-dir {args.miniaod_dir} 中没有找到 campaign 子目录")
+        else:
+            parser.error("需要 --campaign 或 --miniaod-dir")
+
+        if args.efficiency_ntuple:
+            try:
+                validate_efficiency_campaigns(campaign_names)
+            except ValueError as exc:
+                parser.error(str(exc))
+
+        if machine_env.is_hepjob:
+            try:
+                return execute_hepjob_delegate(args)
+            except ValueError as exc:
+                parser.error(str(exc))
+
+        local_output_base = args.local_output_base or (
+            machine_env.local_output_base if machine_env.uses_local_storage else ""
+        )
+        options = WorkflowOptions(
+            jobs_per_campaign=0,  # ntuple-only 模式不使用
+            max_events=args.max_events,
+            enable_ntuple=True,
+            efficiency_ntuple=args.efficiency_ntuple,
+            cleanup=args.cleanup,
+            test_mode=False,
+            scan_existing=False,
+            force_generate_lhe=False,
+            proxy_path=args.proxy_path,
+            lhe_unwevt=None,
+            dagman_max_jobs_submitted=0,
+            dagman_max_jobs_idle=0,
+            machine_env=machine_env,
+            local_log_dir=args.local_log_dir,
+            local_output_base=local_output_base,
+            log_root=os.path.abspath(args.log_root) if args.log_root else "",
+            maxjobs_lhe=0,
+            maxjobs_processing=0,
+            maxjobs_ntuple=args.maxjobs_ntuple,
+            cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
+        )
+        return execute_ntuple_only_generation(
+            campaign_names=campaign_names,
+            miniaod_dir=args.miniaod_dir,
+            miniaod_base_url=args.miniaod_base_url,
+            miniaod_filename=args.miniaod_filename,
+            output_dir=args.output_dir,
+            dag_filename=args.output,
+            options=options,
+            jobs=args.jobs,
             dry_run=args.dry_run,
         )
 

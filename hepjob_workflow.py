@@ -33,9 +33,11 @@ from dag_generator import (
     canonical_mode,
     compute_pool_requirements,
     detect_proxy_path,
+    discover_ntuple_jobs,
     ensure_dir,
     expand_campaign_selection,
     pool_storage_name,
+    prepare_ntuple_only_assets,
     prepare_runtime_assets,
     real_pool_names,
     scan_existing_pools,
@@ -278,6 +280,112 @@ fi
 echo "=== Processing job done: {campaign_name} job={job_index} ==="
 """
 
+
+def generate_ntuple_only_job_script(
+    campaign_name: str,
+    job_index: int,
+    analysis: str,
+    miniaod_input: str,
+    max_events: int,
+    efficiency_ntuple: bool,
+    cleanup: bool,
+    bundle_dir: str,
+    ntuple_bundle_name: str,
+    proxy_bundle_name: str,
+) -> str:
+    """生成单个 ntuple-only 作业的 bash 脚本内容。
+
+    使用 cmssw-el9 容器单独运行 ntuple 步骤（CMSSW_15 需要 el9）。
+    """
+    efficiency_ntuple_str = bool_str(efficiency_ntuple)
+    cleanup_str = bool_str(cleanup)
+    work_dir = f"{bundle_dir}/ntuple_{campaign_name}_{job_index}"
+    proxy_path = f"{work_dir}/credentials/x509_user_proxy"
+
+    return _NTUPLE_ONLY_SCRIPT_TEMPLATE.format(
+        campaign_name=campaign_name,
+        job_index=job_index,
+        analysis=analysis,
+        miniaod_input=miniaod_input,
+        max_events=max_events,
+        efficiency_ntuple_str=efficiency_ntuple_str,
+        cleanup_str=cleanup_str,
+        bundle_dir=bundle_dir,
+        ntuple_bundle_name=ntuple_bundle_name,
+        proxy_bundle_name=proxy_bundle_name,
+        work_dir=work_dir,
+        proxy_path=proxy_path,
+    )
+
+
+_NTUPLE_ONLY_SCRIPT_TEMPLATE = """#!/bin/bash
+set -euo pipefail
+# HepJob Ntuple-only: {campaign_name} job={job_index}
+
+echo "=== Ntuple-only job start: {campaign_name} job={job_index} ==="
+echo "Host: $(hostname)"
+echo "Date: $(date)"
+
+BUNDLE_DIR="{bundle_dir}"
+WORK_DIR="{work_dir}"
+rm -rf "${{WORK_DIR}}" 2>/dev/null || true
+mkdir -p "${{WORK_DIR}}"
+cd "${{WORK_DIR}}"
+
+echo "Extracting bundles..."
+tar -xzf "${{BUNDLE_DIR}}/{proxy_bundle_name}"
+tar -xzf "${{BUNDLE_DIR}}/{ntuple_bundle_name}"
+
+PROXY_FILE="{proxy_path}"
+chmod 600 "${{PROXY_FILE}}"
+
+# Write inner command as a script to avoid cmssw-el9 quoting issues
+cat > "${{WORK_DIR}}/run_inside.sh" << INNER_EOF
+#!/bin/bash
+# Sanitize environment: remove host CMSSW PATH/LD_LIBRARY_PATH
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/cvmfs/cms.cern.ch/common
+unset LD_LIBRARY_PATH
+export X509_USER_PROXY={proxy_path}
+cd {work_dir}/runtime/processing
+export WORKDIR=\$(mktemp -d /tmp/hepjob_ntuple_XXXXXX)
+bash run_chain.sh \\
+    --workdir "\${{WORKDIR}}" \\
+    --inputs file:/dev/null \\
+    --modes normal \\
+    --analysis {analysis} \\
+    --campaign {campaign_name} \\
+    --job-id {job_index} \\
+    --max-events {max_events} \\
+    --enable-ntuple true \\
+    --efficiency-ntuple {efficiency_ntuple_str} \\
+    --cleanup {cleanup_str} \\
+    --skip-to ntuple \\
+    --miniaod-input {miniaod_input} \\
+    --transfer-miniaod false
+EC=\$?
+rm -rf "\${{WORKDIR}}" 2>/dev/null || true
+exit \$EC
+INNER_EOF
+chmod +x "${{WORK_DIR}}/run_inside.sh"
+
+echo "Launching cmssw-el9 container..."
+cmssw-el9 -B /workfs2 -B /scratchfs -- "${{WORK_DIR}}/run_inside.sh" \
+    > "${{WORK_DIR}}/container_stdout.log" 2> "${{WORK_DIR}}/container_stderr.log"
+CONTAINER_RC=$?
+
+echo "Container exit code: ${{CONTAINER_RC}}"
+echo "=== Container stdout (last 30 lines) ==="
+tail -n 30 "${{WORK_DIR}}/container_stdout.log" 2>/dev/null || true
+echo "=== Container stderr (last 30 lines) ==="
+tail -n 30 "${{WORK_DIR}}/container_stderr.log" 2>/dev/null || true
+
+if [ ${{CONTAINER_RC}} -ne 0 ]; then
+    echo "ERROR: Container exited with code ${{CONTAINER_RC}}"
+    exit ${{CONTAINER_RC}}
+fi
+
+echo "=== Ntuple-only job done: {campaign_name} job={job_index} ==="
+"""
 
 
 def write_job_script(path: str, content: str) -> None:
@@ -769,6 +877,55 @@ def build_parser() -> argparse.ArgumentParser:
     test_parser.add_argument("--proxy-path", default=detect_proxy_path(), help="代理路径。")
     test_parser.add_argument("--group", default="cms", help="HepJob 组名。")
 
+    ntuple_only_parser = subparsers.add_parser(
+        "generate-ntuple-only",
+        help="从已有 MiniAOD 文件生成仅含 ntuple 重跑节点的 HepJob 工作流",
+    )
+    ntuple_only_parser.add_argument(
+        "--campaign", action="append", required=True,
+        help="可重复指定，支持 ALL/JJP_ALL/JUP_ALL 或逗号分隔。",
+    )
+    ntuple_only_parser.add_argument(
+        "--miniaod-dir", default="",
+        help="本地 MiniAOD 基础目录，包含 campaign_name/job_index/MINIAOD.root 结构。",
+    )
+    ntuple_only_parser.add_argument(
+        "--miniaod-base-url", default="",
+        help="远端 MiniAOD URL 基础 (e.g. root://cceos.ihep.ac.cn//eos/.../output)，与 --jobs 配合使用。",
+    )
+    ntuple_only_parser.add_argument(
+        "--miniaod-filename", default="MINIAOD.root",
+        help="MiniAOD 文件名（默认: MINIAOD.root）。",
+    )
+    ntuple_only_parser.add_argument("--jobs", type=int, default=0, help="每个 campaign 的 job 数。")
+    ntuple_only_parser.add_argument(
+        "--output-dir", default=None,
+        help=f"输出目录（默认: {WORKFLOW_BASE}/hepjob_output/batch_<timestamp>）。",
+    )
+    ntuple_only_parser.add_argument("--max-events", type=int, default=-1, help="每个 job 的事件数，-1 表示全部。")
+    ntuple_only_parser.add_argument(
+        "--efficiency-ntuple", action="store_true",
+        help="生成 multileppat 效率/acceptance 可用的 JJP full-GEN truth ntuple，并写出 ntuple manifest。",
+    )
+    ntuple_only_parser.add_argument(
+        "--cleanup", dest="cleanup", action="store_true", default=True,
+        help="作业结束后清理中间文件。",
+    )
+    ntuple_only_parser.add_argument(
+        "--no-cleanup", dest="cleanup", action="store_false",
+        help="保留 worker 上的中间文件。",
+    )
+    ntuple_only_parser.add_argument("--proxy-path", default=detect_proxy_path(), help="代理路径。")
+    ntuple_only_parser.add_argument("--group", default="cms", help="HepJob 组名。")
+    ntuple_only_parser.add_argument(
+        "--walltime", default="test", choices=("test", "short", "mid", "long", "special"),
+        help="作业 walltime 等级（test/short/mid/long/special）。",
+    )
+    ntuple_only_parser.add_argument(
+        "--local-output-base", default="",
+        help="本地输出基目录；会通过 LOCAL_OUTPUT_BASE 环境变量传递给 worker。",
+    )
+
     return parser
 
 
@@ -850,6 +1007,166 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"  bash {lhe_path}")
         print(f"  hep_q                                   # 检查状态")
         print(f"  bash {proc_path}")
+        return 0
+
+    if args.command == "generate-ntuple-only":
+        campaign_names = expand_campaign_selection(args.campaign)
+
+        if args.efficiency_ntuple:
+            try:
+                validate_efficiency_campaigns(campaign_names)
+            except ValueError as exc:
+                parser.error(str(exc))
+
+        output_dir = args.output_dir or default_hepjob_output_dir()
+        miniaod_dir = args.miniaod_dir or ""
+        miniaod_base_url = args.miniaod_base_url or ""
+        miniaod_filename = args.miniaod_filename or "MINIAOD.root"
+        jobs = args.jobs
+        max_events = args.max_events
+        efficiency_ntuple = args.efficiency_ntuple
+        cleanup = args.cleanup
+        hep_group = args.group
+        walltime = args.walltime
+        local_output_base = args.local_output_base or ""
+
+        use_miniaod_dir = bool(miniaod_dir)
+        use_miniaod_base_url = bool(miniaod_base_url)
+
+        if use_miniaod_dir and use_miniaod_base_url:
+            parser.error("--miniaod-dir 和 --miniaod-base-url 不能同时使用")
+
+        # Resolve job indices
+        if use_miniaod_dir:
+            campaign_jobs_map = discover_ntuple_jobs(
+                miniaod_dir, campaign_names, miniaod_filename, max_jobs=jobs,
+            )
+        elif use_miniaod_base_url:
+            if jobs <= 0:
+                parser.error("使用 --miniaod-base-url 时必须提供 --jobs")
+            campaign_jobs_map = OrderedDict(
+                (name, list(range(jobs))) for name in campaign_names
+            )
+        else:
+            parser.error("需要 --miniaod-dir 或 --miniaod-base-url")
+
+        if not campaign_jobs_map:
+            print("错误: 没有任何可用的 ntuple job（未找到 MiniAOD 文件）", file=sys.stderr)
+            return 1
+
+        total_jobs = sum(len(indices) for indices in campaign_jobs_map.values())
+
+        print(f"=== HepJob Ntuple-only 工作流生成 ===")
+        print(f"Campaigns: {', '.join(campaign_names)}")
+        print(f"Total ntuple jobs: {total_jobs}")
+        print(f"每 job 事件数: {max_events}")
+        print(f"Efficiency ntuple: {efficiency_ntuple}")
+        print(f"输出目录: {output_dir}")
+        print()
+
+        ensure_dir(output_dir)
+        bundle_dir = os.path.join(output_dir, "bundles")
+        scripts_dir = os.path.join(output_dir, "scripts")
+        logs_dir = os.path.join(output_dir, "logs")
+        ensure_dir(bundle_dir)
+        ensure_dir(scripts_dir)
+        ensure_dir(logs_dir)
+
+        # Prepare ntuple-only runtime assets
+        runtime_assets = prepare_ntuple_only_assets(bundle_dir)
+        build_proxy_bundle(bundle_dir, args.proxy_path)
+        ntuple_bundle_name = BUNDLE_NAMES["ntuple"]
+        proxy_bundle_name = BUNDLE_NAMES["proxy"]
+
+        # MiniAOD input path factory
+        def miniaod_input_fn(campaign_name: str, job_index: int) -> str:
+            if use_miniaod_dir:
+                raw_path = os.path.join(miniaod_dir, campaign_name, str(job_index), miniaod_filename)
+                return f"file:{raw_path}"
+            else:
+                base = miniaod_base_url.rstrip("/")
+                return f"{base}/{campaign_name}/{job_index}/{miniaod_filename}"
+
+        # Generate ntuple-only job scripts
+        ntuple_scripts = []
+        ntuple_names = []
+        for campaign_name in campaign_names:
+            campaign = CAMPAIGNS[campaign_name]
+            job_indices = campaign_jobs_map.get(campaign_name, [])
+            for job_index in job_indices:
+                job_name = f"ntuple_{campaign_name}_{job_index}"
+                miniaod_input = miniaod_input_fn(campaign_name, job_index)
+                script_path = os.path.join(scripts_dir, f"{job_name}.sh")
+                content = generate_ntuple_only_job_script(
+                    campaign_name, job_index, campaign.analysis_type,
+                    miniaod_input, max_events,
+                    efficiency_ntuple, cleanup,
+                    bundle_dir, ntuple_bundle_name, proxy_bundle_name,
+                )
+                write_job_script(script_path, content)
+                ntuple_scripts.append(script_path)
+                ntuple_names.append(job_name)
+
+        # Generate submit script
+        submit_ntuple_path = os.path.join(output_dir, "submit_ntuple.sh")
+        submit_lines = ["#!/bin/bash", "set -euo pipefail", ""]
+        for script_path, job_name in zip(ntuple_scripts, ntuple_names):
+            log_prefix = os.path.join(logs_dir, job_name)
+            submit_lines.append(
+                f"hep_sub {script_path} -g {hep_group} -gwn CMS -wt {walltime} -n 1 "
+                f"-o {log_prefix}.stdout -e {log_prefix}.stderr"
+            )
+        write_job_script(submit_ntuple_path, "\n".join(submit_lines) + "\n")
+
+        # Metadata
+        metadata = OrderedDict([
+            ("created_at", datetime.now().isoformat()),
+            ("output_dir", output_dir),
+            ("submit_ntuple", submit_ntuple_path),
+            ("campaigns", list(campaign_names)),
+            ("campaign_jobs", {name: list(indices) for name, indices in campaign_jobs_map.items()}),
+            ("ntuple_only", True),
+            ("max_events", max_events),
+            ("efficiency_ntuple", efficiency_ntuple),
+            ("bundle_dir", bundle_dir),
+            ("logs_dir", logs_dir),
+            (
+                "ntuple_manifest",
+                build_ntuple_manifest(
+                    campaign_names,
+                    campaign_jobs_map=campaign_jobs_map,
+                    local_output_base=local_output_base,
+                )
+                if efficiency_ntuple
+                else OrderedDict(),
+            ),
+        ])
+        metadata_path = os.path.join(output_dir, "metadata.json")
+        with open(metadata_path, "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+
+        if efficiency_ntuple:
+            write_ntuple_manifest(
+                output_dir,
+                build_ntuple_manifest(
+                    campaign_names,
+                    campaign_jobs_map=campaign_jobs_map,
+                    local_output_base=local_output_base,
+                ),
+            )
+
+        print()
+        print("=== 生成完成 ===")
+        print(f"Submit 脚本: {submit_ntuple_path}")
+        print(f"作业脚本: {scripts_dir}/")
+        print(f"日志目录: {logs_dir}/")
+        print(f"元数据: {metadata_path}")
+        if efficiency_ntuple:
+            print(f"Ntuple manifest: {os.path.join(output_dir, 'ntuple_manifest.json')}")
+        print()
+        print("使用方法：")
+        print(f"  bash {submit_ntuple_path}")
         return 0
 
     parser.error(f"未知命令: {args.command}")
