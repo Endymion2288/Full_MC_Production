@@ -6,6 +6,7 @@
 #   local_output_base  (may be empty for t2_xrootd mode)
 #   request_cpus / request_memory / request_disk
 #   ntuple_bundle_path / ntuple_bundle_name / proxy_bundle_path / proxy_bundle_name
+#   ntuple_wrapper_path / ntuple_wrapper_name
 #   log_root
 # ==============================================================================
 
@@ -13,12 +14,12 @@ Universe = vanilla
 
 Executable = /bin/bash
 transfer_executable = False
-Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); install -m 600 credentials/x509_user_proxy /tmp/x509up_u$UID; rm -rf credentials; unset X509_USER_PROXY; tar -xzf $(ntuple_bundle_name); cd runtime/processing; bash run_chain.sh --inputs file:/dev/null --modes normal --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events $(max_events) --enable-ntuple true --efficiency-ntuple $(efficiency_ntuple) --cleanup $(cleanup) --skip-to ntuple --miniaod-input $(miniaod_input) --transfer-miniaod false'"
+Arguments = "./$(ntuple_wrapper_name) $(ntuple_bundle_name) $(proxy_bundle_name) $(analysis) $(campaign) $(job_id) $(max_events) $(efficiency_ntuple) $(cleanup) $(miniaod_input) $(local_output_base)"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
 
-Transfer_Input_Files = $(ntuple_bundle_path), $(proxy_bundle_path)
+Transfer_Input_Files = $(ntuple_bundle_path), $(proxy_bundle_path), $(ntuple_wrapper_path)
 
 transfer_output_files =
 
@@ -30,11 +31,11 @@ request_cpus = $(request_cpus)
 request_memory = $(request_memory)
 request_disk = $(request_disk)
 
+Requirements = (TARGET.Machine =!= "nd-11.hepthu.com") && (TARGET.Arch == "X86_64") && (TARGET.OpSys == "LINUX") && (TARGET.Disk >= RequestDisk) && (TARGET.Memory >= RequestMemory) && (TARGET.Cpus >= RequestCpus) && (TARGET.HasFileTransfer)
+
 +MaxRuntime = 604800
 
 Environment = "HOME=/srv LOCAL_OUTPUT_BASE=$(local_output_base)"
-
-+SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
 
 OnExitHold = (ExitCode != 0)
 OnExitHoldReason = "Ntuple chain failed"

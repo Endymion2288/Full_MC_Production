@@ -13,11 +13,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
@@ -176,6 +178,10 @@ BUNDLE_NAMES = {
     "proxy": "proxy_bundle.tar.gz",
 }
 
+NTUPLE_WRAPPER_PATH = os.path.join(
+    BASE_DIR, "processing", "condor_wrappers", "run_ntuple_only.sh"
+)
+NTUPLE_WRAPPER_NAME = "run_ntuple_only.sh"
 DEFAULT_LOG_ROOT = os.path.join(BASE_DIR, "log")
 CMSSW15_RUNTIME_TARBALL_NAME = "cmssw15_tpsonia2mumu_runtime.tar.gz"
 DEFAULT_CMSSW15_RUNTIME_TARBALL = os.path.join(
@@ -1136,6 +1142,148 @@ def build_tpsonia2mumu_package(output_dir: str) -> Tuple[str, str]:
     return package_path, package_name
 
 
+def build_cmssw15_runtime_tarball(output_dir: Optional[str] = None) -> str:
+    """从 CVMFS 和 git submodule 构建预编译的 CMSSW15 ntuple runtime tarball。
+
+    仅在 tarball 缺失时调用，产物写入 common/packages/（或 output_dir），
+    后续 DAG 生成直接复用。
+
+    Returns:
+        生成的 tarball 路径。
+    """
+
+    if output_dir is None:
+        output_dir = os.path.dirname(DEFAULT_CMSSW15_RUNTIME_TARBALL)
+
+    ensure_dir(output_dir)
+    target_path = os.path.join(output_dir, CMSSW15_RUNTIME_TARBALL_NAME)
+
+    if os.path.isfile(target_path):
+        try:
+            validate_cmssw15_runtime_tarball(target_path)
+            return target_path
+        except ValueError:
+            os.remove(target_path)
+
+    build_dir = tempfile.mkdtemp(prefix="build_cmssw15_")
+    submodule_dir = TPS_ONIA2MUMU_SUBMODULE
+    try:
+        if not os.path.isdir(submodule_dir):
+            raise FileNotFoundError(
+                "TPS-Onia2MuMu submodule 不存在，请先执行 "
+                "`git submodule update --init --recursive`。"
+            )
+
+        print("  [cmssw15-runtime] 创建 CMSSW_15_0_15 项目（通过 CVMFS）...")
+        subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                "source /cvmfs/cms.cern.ch/cmsset_default.sh && "
+                f"export SCRAM_ARCH=el9_amd64_gcc12 && "
+                f"cd {shlex.quote(build_dir)} && "
+                "scramv1 project CMSSW CMSSW_15_0_15",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+
+        project_dir = os.path.join(build_dir, "CMSSW_15_0_15")
+        src_dir = os.path.join(project_dir, "src")
+        tps_target = os.path.join(src_dir, "HeavyFlavorAnalysis", "TPS-Onia2MuMu")
+
+        print("  [cmssw15-runtime] 复制 TPS-Onia2MuMu 代码...")
+        shutil.copytree(submodule_dir, tps_target, symlinks=True, dirs_exist_ok=True)
+        _clean_git_artifacts(tps_target)
+
+        _ensure_openssl_dev_symlinks(project_dir)
+
+        print("  [cmssw15-runtime] 编译 HeavyFlavorAnalysis/TPS-Onia2MuMu ...")
+        subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                "source /cvmfs/cms.cern.ch/cmsset_default.sh && "
+                f"export SCRAM_ARCH=el9_amd64_gcc12 && "
+                f"cd {shlex.quote(src_dir)} && "
+                "eval $(scramv1 runtime -sh) && "
+                f"export LIBRARY_PATH={shlex.quote(project_dir)}:$LIBRARY_PATH && "
+                "scram b -j 8 HeavyFlavorAnalysis/TPS-Onia2MuMu",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+
+        print(f"  [cmssw15-runtime] 打包 {target_path} ...")
+        _clean_git_artifacts(project_dir)
+        # 清理构建过程中临时创建的 openssl 符号链接
+        for name in ("libssl.so", "libcrypto.so"):
+            link_path = os.path.join(project_dir, name)
+            if os.path.islink(link_path):
+                os.unlink(link_path)
+        with tarfile.open(target_path, "w:gz") as archive:
+            archive.add(project_dir, arcname="CMSSW_15_0_15")
+
+        validate_cmssw15_runtime_tarball(target_path)
+
+        size_mb = os.path.getsize(target_path) / (1024 * 1024)
+        print(f"  [cmssw15-runtime] 构建完成 ({size_mb:.0f} MB)")
+        return target_path
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
+
+
+def _ensure_openssl_dev_symlinks(project_dir: str) -> None:
+    """若无 openssl-devel，在 project_dir 中创建 libssl.so / libcrypto.so 的符号链接。
+
+    部分系统（如 EL9 最小安装）只有带版本号的 .so.3 文件，缺少供 ld 使用的
+    未版本化 .so 符号链接，导致 scram 链接阶段失败。
+    """
+    needed = False
+    for lib in ("libssl.so", "libcrypto.so"):
+        if not os.path.exists(os.path.join(project_dir, lib)):
+            needed = True
+            break
+    if not needed:
+        return
+
+    candidates = (
+        "/usr/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+        "/lib64",
+        "/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    )
+    for lib_base in ("libssl", "libcrypto"):
+        link_path = os.path.join(project_dir, lib_base + ".so")
+        if os.path.exists(link_path):
+            continue
+        for candidate_dir in candidates:
+            for variant in (f"{lib_base}.so.3", f"{lib_base}.so"):
+                candidate = os.path.join(candidate_dir, variant)
+                if os.path.exists(candidate) and not os.path.islink(link_path):
+                    os.symlink(candidate, link_path)
+                    break
+            if os.path.exists(link_path):
+                break
+
+
+def _clean_git_artifacts(directory: str) -> None:
+    """递归删除目录中的 .git / __pycache__ / .pyc 构���品。"""
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if d not in {".git", "__pycache__"}]
+        for name in files:
+            if name.endswith((".pyc", ".pyo")):
+                os.remove(os.path.join(root, name))
+    git_dir = os.path.join(directory, ".git")
+    if os.path.isdir(git_dir):
+        shutil.rmtree(git_dir, ignore_errors=True)
+
+
 def normalize_tar_name(name: str) -> str:
     return name.lstrip("./").rstrip("/")
 
@@ -1209,8 +1357,16 @@ def inspect_helac_package(path: str) -> Tuple[bool, str]:
     return False, "missing HELAC-Onia-2.7.6/ho_cluster or source fallback tarballs"
 
 
-def resolve_cmssw15_runtime_tarball(path: Optional[str]) -> Optional[str]:
-    """Return a CMSSW15 ntuple runtime tarball path when one is available."""
+def resolve_cmssw15_runtime_tarball(
+    path: Optional[str],
+    build_if_missing: bool = False,
+) -> Optional[str]:
+    """Return a CMSSW15 ntuple runtime tarball path when one is available.
+
+    Args:
+        path: 用户显式传入的路径（优先级最高）。
+        build_if_missing: 若为 True 且 tarball 不存在，则尝试从 CVMFS + submodule 构建。
+    """
 
     if path:
         resolved = os.path.abspath(path)
@@ -1221,6 +1377,8 @@ def resolve_cmssw15_runtime_tarball(path: Optional[str]) -> Optional[str]:
     if os.path.isfile(DEFAULT_CMSSW15_RUNTIME_TARBALL):
         validate_cmssw15_runtime_tarball(DEFAULT_CMSSW15_RUNTIME_TARBALL)
         return DEFAULT_CMSSW15_RUNTIME_TARBALL
+    if build_if_missing and os.path.isdir(TPS_ONIA2MUMU_SUBMODULE):
+        return build_cmssw15_runtime_tarball()
     return None
 
 
@@ -1279,7 +1437,9 @@ def prepare_runtime_assets(
 
     if require_analysis_package:
         analysis_package_items: List[Tuple[str, str]] = []
-        runtime_tarball = resolve_cmssw15_runtime_tarball(cmssw15_runtime_tarball)
+        runtime_tarball = resolve_cmssw15_runtime_tarball(
+            cmssw15_runtime_tarball, build_if_missing=True
+        )
         if runtime_tarball:
             analysis_package_items.append(
                 (
@@ -1373,7 +1533,9 @@ def prepare_ntuple_only_assets(
     assets: Dict[str, str] = OrderedDict()
 
     analysis_package_items: List[Tuple[str, str]] = []
-    runtime_tarball = resolve_cmssw15_runtime_tarball(cmssw15_runtime_tarball)
+    runtime_tarball = resolve_cmssw15_runtime_tarball(
+        cmssw15_runtime_tarball, build_if_missing=True
+    )
     if runtime_tarball:
         analysis_package_items.append(
             (
@@ -1469,9 +1631,13 @@ class DAGBuilder:
             return "4", "12GB", "20GB"
         return "8", "20GB", "50GB"
 
-    def ntuple_resource_request(self) -> Tuple[str, str, str]:
+    def ntuple_resource_request(self, is_ntuple_only: bool = False) -> Tuple[str, str, str]:
         if self.options.test_mode:
+            if is_ntuple_only:
+                return "1", "2GB", "2GB"
             return "4", "8GB", "10GB"
+        if is_ntuple_only:
+            return "1", "2GB", "2GB"
         return "4", "12GB", "20GB"
 
     def ensure_lhe_jobs(self, pool_name: str, required_count: int) -> None:
@@ -1628,10 +1794,13 @@ class DAGBuilder:
         job_index: int,
         parent_job: Optional[str] = None,
         miniaod_input: Optional[str] = None,
+        is_ntuple_only: bool = False,
     ) -> str:
         campaign = CAMPAIGNS[campaign_name]
         job_name = f"NTUPLE_{campaign_name}_{job_index}"
-        request_cpus, request_memory, request_disk = self.ntuple_resource_request()
+        request_cpus, request_memory, request_disk = self.ntuple_resource_request(
+            is_ntuple_only=is_ntuple_only
+        )
         if miniaod_input is None:
             miniaod_input = f"{EOS_OUTPUT}/{campaign.name}/{job_index}/output_MINIAOD.root"
         local_output_base = self.options.local_output_base
@@ -1646,6 +1815,7 @@ class DAGBuilder:
             "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
             "ntuple_bundle_path=\"{ntuple_bundle_path}\" ntuple_bundle_name=\"{ntuple_bundle_name}\" "
             "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
+            "ntuple_wrapper_path=\"{ntuple_wrapper_path}\" ntuple_wrapper_name=\"{ntuple_wrapper_name}\" "
             "log_root=\"{log_root}\"".format(
                 job=job_name,
                 campaign=dag_escape(campaign.name),
@@ -1663,6 +1833,8 @@ class DAGBuilder:
                 ntuple_bundle_name=dag_escape(self.runtime_assets["ntuple_bundle_name"]),
                 proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
                 proxy_bundle_name=dag_escape(self.runtime_assets["proxy_bundle_name"]),
+                ntuple_wrapper_path=dag_escape(NTUPLE_WRAPPER_PATH),
+                ntuple_wrapper_name=dag_escape(NTUPLE_WRAPPER_NAME),
                 log_root=dag_escape(self.options.log_root),
             )
         )
@@ -1799,6 +1971,7 @@ class DAGBuilder:
                     campaign_name, job_index,
                     parent_job=None,
                     miniaod_input=miniaod_path,
+                    is_ntuple_only=True,
                 )
             self.dag_lines.append("")
 
