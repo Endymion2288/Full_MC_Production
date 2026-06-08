@@ -1,11 +1,5 @@
 # ==============================================================================
-# lhe_gen.sub - LHE 生成节点 submit 模板
-# ==============================================================================
-# 由 dag_generator.py 通过 DAGMan VARS 注入以下变量：
-#   pool / seed / min_pt_* / unwevt / test_mode
-#   request_cpus / request_memory / request_disk
-#   lhe_bundle_path / lhe_bundle_name / proxy_bundle_path / proxy_bundle_name
-#   log_root
+# lhe_gen_hepthu.sub - LHE generation submit template for hepthu HTCondor
 # ==============================================================================
 
 Universe = vanilla
@@ -21,17 +15,21 @@ Transfer_Input_Files = $(lhe_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
-Error  = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
-Log    = $(log_root)/lhe_$(pool)_$(seed)_$(Cluster).log
+Output = lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stdout
+Error  = lhe_$(pool)_$(seed)_$(Cluster)_$(Process).stderr
+Log    = lhe_$(pool)_$(seed)_$(Cluster)_$(Process).log
 
 request_cpus = $(request_cpus)
 request_memory = $(request_memory)
 request_disk = $(request_disk)
 
-+MaxRuntime = 604800
+requirements = (TARGET.Machine == "$(target_machine)")
+getenv = True
+initialdir = $(log_dir)
 
-Environment = "HOME=/srv"
+environment = "LOCAL_OUTPUT_BASE=$(local_output_base)"
+
++MaxRuntime = 604800
 
 +SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el7:x86_64"
 

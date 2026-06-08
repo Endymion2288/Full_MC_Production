@@ -1,12 +1,5 @@
 # ==============================================================================
-# processing.sub - shower/mix/CMSSW 处理节点 submit 模板
-# ==============================================================================
-# 由 dag_generator.py 通过 DAGMan VARS 注入以下变量：
-#   campaign / job_id / inputs / modes / analysis / n_sources
-#   max_events / enable_ntuple / efficiency_ntuple / cleanup
-#   request_cpus / request_memory / request_disk
-#   processing_bundle_path / processing_bundle_name / proxy_bundle_path / proxy_bundle_name
-#   log_root
+# processing_hepthu.sub - shower/mix/CMSSW submit template for hepthu HTCondor
 # ==============================================================================
 
 Universe = vanilla
@@ -22,20 +15,23 @@ Transfer_Input_Files = $(processing_bundle_path), $(proxy_bundle_path)
 
 transfer_output_files =
 
-Output = $(log_root)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
-Error  = $(log_root)/proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
-Log    = $(log_root)/proc_$(campaign)_$(job_id)_$(Cluster).log
+Output = proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stdout
+Error  = proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).stderr
+Log    = proc_$(campaign)_$(job_id)_$(Cluster)_$(Process).log
 
 request_cpus = $(request_cpus)
 request_memory = $(request_memory)
 request_disk = $(request_disk)
 
+requirements = (TARGET.Machine == "$(target_machine)")
+getenv = True
+initialdir = $(log_dir)
+
+environment = "LOCAL_OUTPUT_BASE=$(local_output_base) RAW_THREADS=1 RAW_STREAMS=1 RAW_WATCHDOG_TIMEOUT=7200s RAW_WATCHDOG_KILL_AFTER=300s RAW_CMSDRIVER_TIMEOUT=600s PREMIX_INPUT_MODE=$(premix_input_mode) PREMIX_REDIRECTOR=$(premix_redirector) PREMIX_CACHE_FILES=$(premix_cache_files) PREMIX_CACHE_TIMEOUT=7200s PREMIX_CACHE_RETRIES=3 PREMIX_CACHE_REDIRECTOR=$(premix_cache_redirector)"
+
 +MaxRuntime = 604800
 
-Environment = "HOME=/srv"
-
-+SingularityImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
-
+# CMSSW_12 compatibility is handled explicitly inside run_chain.sh.
 OnExitHold = (ExitCode != 0)
 OnExitHoldReason = "Processing chain failed"
 OnExitHoldSubCode = 1

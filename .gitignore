@@ -21,11 +21,15 @@ test/
 *.pyc
 tmp/
 xcheng.cc
+chiw.cc
 test_output/
 .claude/
+.bash_history
+.viminfo
 generated/
 output*/
 log_full/
 checks/
 .codex/
 Helac2Ntuple.pdf
+Ntuple-only-workflow/

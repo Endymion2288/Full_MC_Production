@@ -12,6 +12,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 DO_SUBMIT=0
 DO_WAIT=0
@@ -93,4 +94,8 @@ fi
 echo "[INFO] 执行测试入口: ${CMD[*]}"
 echo "[INFO] 先执行八重态 PDG 映射自检"
 "${SCRIPT_DIR}/test_octet_pdg_tool.sh"
+
+echo "[INFO] 检查 GEN-SIM 顶点涂抹配置"
+"${BASE_DIR}/tools/check_gensim_vtxsmeared_config.py"
+
 "${CMD[@]}"

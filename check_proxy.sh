@@ -2,17 +2,18 @@
 # ==============================================================================
 # check_proxy.sh - VOMS 代理检查与远端写权限测试
 # ==============================================================================
-# 主要服务于 workbook_v2 版本的 T2_CN_Beijing 工作流。
+# 服务于 ihep/lxlogin 集群的 HepJob 工作流（原 T2_CN_Beijing 适配版）。
 # ==============================================================================
 
 set -e
 
 # Configuration
+PROXY_ROOT="/workfs2/cms/chengxing/Full_MC_Production"
 PROXY_SRC="/tmp/x509up_u$(id -u)"
-PROXY_DST="/afs/cern.ch/user/x/xcheng/x509up_u$(id -u)"
+PROXY_DST="${PROXY_ROOT}/x509up_u$(id -u)"
 EOS_HOST="cceos.ihep.ac.cn"
 EOS_XRDFS_TARGET="root://${EOS_HOST}"
-EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v2"
+EOS_PATH_BASE="/eos/ihep/cms/store/user/xcheng/MC_Production_v3"
 MIN_HOURS_LEFT=12
 
 # Colors
@@ -52,12 +53,12 @@ activate_proxy_env() {
 
 check_proxy() {
     msg_info "Checking VOMS proxy status..."
-    
+
     if ! command -v voms-proxy-info &>/dev/null; then
         msg_error "voms-proxy-info not found. Please setup CMS environment first."
         return 1
     fi
-    
+
     if ! activate_proxy_env; then
         msg_error "No proxy file found in X509_USER_PROXY, ${PROXY_DST} or ${PROXY_SRC}."
         return 1
@@ -67,23 +68,23 @@ check_proxy() {
         msg_error "No valid proxy found."
         return 1
     fi
-    
+
     # Check time left
     local timeleft=$(voms-proxy-info -file "${X509_USER_PROXY}" --timeleft 2>/dev/null || echo "0")
     local hours_left=$((timeleft / 3600))
-    
+
     if [[ $hours_left -lt $MIN_HOURS_LEFT ]]; then
         msg_warn "Proxy has only ${hours_left}h left (minimum: ${MIN_HOURS_LEFT}h)"
         return 1
     fi
-    
+
     # Check CMS VO
     local vo=$(voms-proxy-info -file "${X509_USER_PROXY}" --vo 2>/dev/null || echo "")
     if [[ "$vo" != "cms" ]]; then
         msg_error "Proxy is not for CMS VO (found: $vo)"
         return 1
     fi
-    
+
     msg_ok "Valid CMS proxy found (${hours_left}h remaining)"
     return 0
 }
@@ -114,7 +115,6 @@ copy_proxy() {
     elif [[ -n "${X509_USER_PROXY:-}" && -f "${X509_USER_PROXY}" ]]; then
         source_proxy="${X509_USER_PROXY}"
     elif [[ -f "${PROXY_DST}" ]]; then
-        # 只有当没有其他可用 proxy 时才使用 AFS 上的
         source_proxy="${PROXY_DST}"
     else
         msg_error "Source proxy not found in ${PROXY_SRC}, X509_USER_PROXY or ${PROXY_DST}"
@@ -134,7 +134,8 @@ copy_proxy() {
         return 1
     fi
 
-    # 总是复制，确保 AFS 上是最新的
+    # 复制到 workfs2 持久位置
+    mkdir -p "${PROXY_ROOT}"
     cp "${source_proxy}" "$PROXY_DST"
     chmod 600 "$PROXY_DST"
 
@@ -143,7 +144,7 @@ copy_proxy() {
 }
 
 test_xrootd() {
-    msg_info "Testing XRootD access to T2_CN_Beijing..."
+    msg_info "Testing XRootD access to EOS..."
 
     if ! activate_proxy_env; then
         msg_error "No valid proxy file available for XRootD test"
@@ -169,16 +170,16 @@ test_xrootd() {
         return 1
     fi
     
-    msg_ok "XRootD access to T2_CN_Beijing verified"
+    msg_ok "XRootD access verified"
 }
 
 ensure_directories() {
-    msg_info "Ensuring base directories exist on T2_CN_Beijing..."
-    
+    msg_info "Ensuring base directories exist on EOS..."
+
     local dirs=("lhe_pools" "output" "lhe_pools/pool_jpsi_CSCO_g" "lhe_pools/pool_upsilon_CSCO_g" \
-                "lhe_pools/pool_jpsi_upsilon_CSCO" "lhe_pools/pool_2jpsi" "lhe_pools/pool_2jpsi_cs" "lhe_pools/pool_2jpsi_g" \
+                "lhe_pools/pool_jpsi_upsilon_CSCO" "lhe_pools/pool_2jpsi_cs" "lhe_pools/pool_2jpsi_g" \
                 "lhe_pools/pool_gg")
-    
+
     for subdir in "${dirs[@]}"; do
         if xrdfs "$EOS_XRDFS_TARGET" mkdir -p "$EOS_PATH_BASE/$subdir" 2>/dev/null; then
             msg_ok "Created: $EOS_PATH_BASE/$subdir"
@@ -207,7 +208,7 @@ show_status() {
         echo "  NOT FOUND - run: $0 --init"
     fi
     echo ""
-    echo "T2_CN_Beijing storage:"
+    echo "EOS storage:"
     echo "  Host: $EOS_HOST"
     echo "  Path: $EOS_PATH_BASE"
     echo "=============================================="

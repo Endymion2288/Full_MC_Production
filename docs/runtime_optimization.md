@@ -11,11 +11,12 @@ stable AFS/CVMFS locations.
   sources, build them in the worker sandbox, run HELAC-Onia, convert legacy
   octet PDG codes, and stage out LHE files.
 - Processing jobs transfer `processing_runtime_bundle.tar.gz`, rebuild the
-  Pythia shower/mixer tools, run CMSSW 12 MiniAOD production, and optionally run
-  the CMSSW 15 TPS-Onia2MuMu ntuple stage.
-- Ntuple-enabled processing jobs currently create `CMSSW_15_0_15`, unpack the
-  TPS-Onia2MuMu source package, and run `scram b -j 4
-  HeavyFlavorAnalysis/TPS-Onia2MuMu` for every job.
+  Pythia shower/mixer tools, and run CMSSW 12 MiniAOD production. On the hepthu
+  local-storage profile, ntuple can still run inline so the local MiniAOD does
+  not need to move across worker nodes.
+- On lxplus/T2 DAGs, ntuple-enabled workflows create separate ntuple nodes with
+  `ntuple_runtime_bundle.tar.gz`. Those nodes create or unpack `CMSSW_15_0_15`,
+  load TPS-Onia2MuMu, and run a repo-owned config from `common/cmssw_configs/`.
 
 ## Recommended Improvements
 
@@ -43,7 +44,7 @@ tar -xzf cmssw15_tpsonia2mumu_runtime.tar.gz -C "$WORKDIR"
 cd "$WORKDIR/CMSSW_15_0_15/src"
 scram build ProjectRename
 eval "$(scram runtime -sh)"
-cmsRun HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py ...
+cmsRun /path/to/common/cmssw_configs/ntuple_jjp_cfg.py inputFiles=... outputFile=... maxEvents=...
 ```
 
 The relocation target is `ProjectRename`; use the full `scram build
@@ -57,15 +58,22 @@ that same flag.
 
 ### Split MiniAOD and Ntuple DAG Nodes
 
-Medium-term, separate the processing node into:
+The lxplus/T2 workflow separates the processing node into:
 
 - MiniAOD node: EL9-compatible CMSSW 12 / shower and reconstruction chain.
 - Ntuple node: EL9 / prebuilt CMSSW 15 TPS-Onia2MuMu runtime.
 
-CMSSW 12 is compatible with EL9 for this workflow, so there is no need to keep a
-separate EL8 job class just for MiniAOD production. The split is still useful
-because ntuple retries can avoid rerunning shower, GEN-SIM, RAW, RECO, and
-MiniAOD.
+The hepthu local-storage profile intentionally keeps ntuple inline for now:
+there is no shared T2 MiniAOD URL for a separate ntuple node to consume. The
+split remains useful on lxplus/T2 because ntuple retries can avoid rerunning
+shower, GEN-SIM, RAW, RECO, and MiniAOD.
+
+Ntuple config policy:
+
+- input/output files and `maxEvents` remain `cmsRun` CLI arguments;
+- analysis mode and MC-tree behavior are persistent config choices;
+- `RequireAcceptedCandidatesForMonteCarloTree=False` is the default for both
+  general ntuples and efficiency/acceptance ntuples.
 
 ### Reuse or Prebuild Shower Tools
 

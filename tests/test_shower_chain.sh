@@ -308,6 +308,48 @@ fi
 msg_ok "Event mixer (two sources) successful"
 
 # ============================================================================
+# Test 11: Run event mixer with shuffle
+# ============================================================================
+msg_step "Test 11: Run event mixer with shuffle (two sources)"
+
+"${SHOWER_DIR}/event_mixer_multisource" \
+    "${TEST_WORKDIR}/mixed_shuffled.hepmc" \
+    "${TEST_WORKDIR}/output_normal.hepmc" \
+    "${TEST_WORKDIR}/output_phi.hepmc" \
+    --shuffle-sources 2>&1 | tee "${TEST_WORKDIR}/mixer_shuffled.log"
+
+if [[ ! -f "${TEST_WORKDIR}/mixed_shuffled.hepmc" ]]; then
+    msg_error "Event mixer (shuffle) failed"
+    exit 1
+fi
+msg_ok "Event mixer (shuffled) successful"
+
+# ============================================================================
+# Test 12: Verify shuffle determinism (same seed -> same output)
+# ============================================================================
+msg_step "Test 12: Verify shuffle determinism with fixed seed"
+
+# Run twice with the same seed base — outputs must be identical.
+"${SHOWER_DIR}/event_mixer_multisource" \
+    "${TEST_WORKDIR}/mixed_shuffled_seeded_a.hepmc" \
+    "${TEST_WORKDIR}/output_normal.hepmc" \
+    "${TEST_WORKDIR}/output_phi.hepmc" \
+    --shuffle-sources --shuffle-seed-base 42 2>&1 | tee "${TEST_WORKDIR}/mixer_seeded_a.log"
+
+"${SHOWER_DIR}/event_mixer_multisource" \
+    "${TEST_WORKDIR}/mixed_shuffled_seeded_b.hepmc" \
+    "${TEST_WORKDIR}/output_normal.hepmc" \
+    "${TEST_WORKDIR}/output_phi.hepmc" \
+    --shuffle-sources --shuffle-seed-base 42 2>&1 | tee "${TEST_WORKDIR}/mixer_seeded_b.log"
+
+if ! cmp -s "${TEST_WORKDIR}/mixed_shuffled_seeded_a.hepmc" \
+            "${TEST_WORKDIR}/mixed_shuffled_seeded_b.hepmc"; then
+    msg_error "Shuffle output is NOT deterministic (seed=42 runs differ)"
+    exit 1
+fi
+msg_ok "Shuffle determinism verified (identical output with same seed)"
+
+# ============================================================================
 # Summary
 # ============================================================================
 msg_step "Test Summary"

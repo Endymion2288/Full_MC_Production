@@ -1,8 +1,10 @@
-# T2_CN_Beijing MC Production DAGMan 系统
+# MC Production unified workflow
 
-本目录用于在 `lxplus` 上生成并提交面向 `T2_CN_Beijing` 的 HTCondor DAGMan 工作流，覆盖以下物理链路：
+本目录用一套代码生成不同 submit 环境的生产工作流，覆盖以下物理链路：
 
 `LHE(HELAC-Onia) -> Pythia8 shower -> HepMC mixing -> CMSSW GEN-SIM -> RAW -> RECO -> MiniAOD -> Ntuple`
+
+`T2_CN_Beijing` 在当前配置中表示 IHEP T2 存储端点；对应的 `lxplus_t2_ihep` profile 是在 CERN lxplus 提交 HTCondor/DAGMan 作业，并把 LHE/output 写到 IHEP T2。
 
 当前代码按 [`workbook_v2.md`](/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/workbook_v2.md) 重构，默认支持两类分析：
 
@@ -14,8 +16,11 @@
 - 代码接口保留全链路能力，包括 `Ntuple` 步骤。
 - 本轮小批量 HTCondor 测试默认以跑通到 `MiniAOD` 并完成远端 stage-out 为准。
 - `Ntuple` 步骤保留在接口中；若要真正执行，请确保 `external/TPS-Onia2MuMu` submodule 已初始化，且其 gitlink 指向你要打包的分析代码状态。
+- Ntuple 的输入文件、输出文件和 `maxEvents` 仍通过 `cmsRun` CLI 切换；`analysisMode`、MC truth tree 和 acceptance gating 这类长期分析行为固定在 `common/cmssw_configs/ntuple_*.py` 中。
 - `workbook_v2.md` 中要求的“所有程序、文件、证书统一打包上传后在 worker 解压运行”已经落实到当前 submit 模板；worker 运行时不再回读 AFS 业务目录。
 - worker 启动时会把打包证书复制到节点默认代理路径 `/tmp/x509up_u$UID`；后续程序不再通过环境变量指向解压目录中的本地文件。
+- 不再通过 `VtxSmeared`、`ihep`、`hepthu` 等分支区分运行位置；使用 `dag_generator.py --machine-env ...` 选择 submit/storage profile。
+- `pool_jpsi_CSCO_g` 与 `pool_upsilon_CSCO_g` 使用 `HELAC-Onia addon/pp_psiX_CrystalBall` 的 CrystalBall pT model。
 
 ## 目录说明
 
@@ -70,6 +75,8 @@ export X509_USER_PROXY=/tmp/x509up_u$(id -u)
 
 - `common/packages/helac_package.tar.gz`
 
+该包应包含 HELAC-Onia 与 HepMC 源码 tarball；当前 worker bundle 会把它解压到 LHE generation 节点中使用。
+
 可选但推荐：
 
 - `external/TPS-Onia2MuMu` git submodule
@@ -84,6 +91,19 @@ git submodule update --init --recursive
 
 ## 主入口用法
 
+### Machine env selector
+
+所有生成/校验命令都支持 `--machine-env`：
+
+- `auto`
+  根据 hostname/cwd 自动选择。当前 `/home/storage29/...` 环境会默认选择 `hepthu`。
+- `lxplus_t2_ihep`
+  在 CERN lxplus 使用 HTCondor/DAGMan 提交；LHE/output 存到 IHEP `T2_CN_Beijing` XRootD。别名：`t2_cn_beijing`。
+- `hepthu`
+  在 hepthu HTCondor 提交；LHE/output 存到本地目录，默认 `~/MC_Production_result`，可用 `--local-output-base` 覆盖。
+- `ihep`
+  在 IHEP/lxlogin 使用 HepJob backend；通过同一个 CLI selector 转发到 `hepjob_workflow.py`。
+
 ### 列出可用配置
 
 ```bash
@@ -95,8 +115,8 @@ python3 dag_generator.py list --kind pools
 ### 校验环境
 
 ```bash
-python3 dag_generator.py validate --campaign JJP_DPS2_CS --scan-existing
-python3 dag_generator.py validate --campaign JUP_DPS1 --scan-existing
+python3 dag_generator.py validate --machine-env lxplus_t2_ihep --campaign JJP_DPS2_CS --scan-existing
+python3 dag_generator.py validate --machine-env hepthu --campaign JUP_DPS1 --scan-existing
 ```
 
 若要把 `external/TPS-Onia2MuMu` submodule 也作为硬依赖：
@@ -109,6 +129,7 @@ python3 dag_generator.py validate --campaign JJP_DPS1 --strict-analysis-packages
 
 ```bash
 python3 dag_generator.py generate \
+  --machine-env lxplus_t2_ihep \
   --campaign JJP_DPS1 \
   --jobs 20 \
   --output-dir generated/jjp_dps1 \
@@ -120,12 +141,40 @@ python3 dag_generator.py generate \
 
 - `--disable-ntuple`
   只跑到 MiniAOD，再做 transfer。
+- `--efficiency-ntuple`
+  仅支持 JJP campaigns；启用 `common/cmssw_configs/ntuple_jjp_efficiency_cfg.py` 中固定的 full-GEN truth ntuple 配置，并在输出目录写出可直接供 `run-multileppat-efficiency --input-file-manifest` 使用的 `ntuple_manifest.json`。
 - `--force-generate-lhe`
   不复用远端已有 LHE pool。
 - `--no-scan-existing`
   不扫描远端已有 LHE。
 - `--test-mode`
   把 LHE 生成切到 fast-test。
+- `--local-output-base`
+  `hepthu` profile 的本地 LHE/output 根目录。
+- `--local-log-dir`
+  `hepthu` profile 的 HTCondor stdout/stderr/log 目录；默认是输出 DAG 目录下的 `logs/`。
+- `--log-root`
+  lxplus/T2 split-node submit 模板使用的日志根目录；未指定时沿用 `--local-log-dir` 或 machine-env 默认。
+
+Ntuple 配置策略：
+
+- 常规 JJP/JUP 分别使用 `common/cmssw_configs/ntuple_jjp_cfg.py` 和 `common/cmssw_configs/ntuple_jup_cfg.py`。
+- 效率/acceptance JJP 使用 `common/cmssw_configs/ntuple_jjp_efficiency_cfg.py`，其中 `DoMonteCarloTree=True`。
+- `RequireAcceptedCandidatesForMonteCarloTree=False` 是当前默认，用于避免 MC truth tree 被 reconstructed accepted candidates 门控。
+- runtime wrapper 只传 `inputFiles`、`outputFile`、`runOnMC` 和 `maxEvents`；不要再为 `analysisMode`、`DoMonteCarloTree` 或 `RequireAcceptedCandidatesForMonteCarloTree` 增加命令行开关。
+
+在 hepthu 生成本地存储 DAG：
+
+```bash
+python3 dag_generator.py generate-test \
+  --machine-env hepthu \
+  --campaign JJP_DPS1 \
+  --jobs 1 \
+  --max-events 5 \
+  --enable-ntuple \
+  --efficiency-ntuple \
+  --output-dir tests/generated/hepthu_eff_smoke
+```
 
 ### 生成 HELAC-only Fock-state matrix DAG
 
@@ -148,6 +197,7 @@ python3 dag_generator.py generate-helac-matrix \
 
 ```bash
 python3 dag_generator.py prepare-runtime \
+  --machine-env lxplus_t2_ihep \
   --output-dir tests/generated/runtime_bundle_check
 ```
 
@@ -157,6 +207,7 @@ python3 dag_generator.py prepare-runtime \
 - 需要 ntuple runtime 时加 `--include-ntuple`；若提供
   `--cmssw15-runtime-tarball` 或 `common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz`
   存在且结构有效，会优先打包预编译 CMSSW15 runtime，否则回退到 submodule source package。
+- `lxplus_t2_ihep` 会把 MiniAOD 和 ntuple 拆成独立 DAG nodes；`hepthu` 本地存储 profile 保持 ntuple inline，避免单独 ntuple node 需要跨节点读取本地 MiniAOD。
 - 该命令会同时生成：
   - `lhe_runtime_bundle.tar.gz`
   - `processing_runtime_bundle.tar.gz`
@@ -167,6 +218,7 @@ python3 dag_generator.py prepare-runtime \
 
 ```bash
 python3 dag_generator.py generate-test \
+  --machine-env lxplus_t2_ihep \
   --campaign JJP_DPS2_CS \
   --campaign JJP_DPS2_G \
   --campaign JUP_DPS1 \
@@ -182,6 +234,20 @@ python3 dag_generator.py generate-test \
 - `max-events = 5`
 - `disable-ntuple`
 - `scan-existing = true`
+
+效率/acceptance 小样本可以显式启用 ntuple：
+
+```bash
+python3 dag_generator.py generate-test \
+  --machine-env lxplus_t2_ihep \
+  --campaign JJP_DPS1 \
+  --jobs 1 \
+  --max-events 5 \
+  --enable-ntuple \
+  --efficiency-ntuple \
+  --output-dir tests/generated/jjp_efficiency_smoke \
+  --output mc_test.dag
+```
 
 ## 测试入口
 
@@ -295,10 +361,11 @@ python3 dag_generator.py generate-test \
 
 ```bash
 # 1. 检查代理与环境
-python3 dag_generator.py validate --campaign JJP_DPS2_CS --scan-existing
+python3 dag_generator.py validate --machine-env lxplus_t2_ihep --campaign JJP_DPS2_CS --scan-existing
 
 # 2. 生成小批量测试 DAG
 python3 dag_generator.py generate-test \
+  --machine-env lxplus_t2_ihep \
   --campaign JJP_DPS2_CS \
   --campaign JJP_DPS2_G \
   --campaign JUP_DPS1 \
