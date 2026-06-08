@@ -17,9 +17,9 @@ LOCAL_LOG_DIR = $(log_dir)
 
 Universe = vanilla
 
-Executable = /bin/bash
-transfer_executable = False
-Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); PROXY_TARGET=/tmp/x509up_u`id -u`; install -m 600 credentials/x509_user_proxy ${PROXY_TARGET}; rm -rf credentials; export X509_USER_PROXY=${PROXY_TARGET}; export LOCAL_OUTPUT_BASE=$(local_output_base); export RAW_THREADS=1 RAW_STREAMS=1 RAW_WATCHDOG_TIMEOUT=7200s RAW_WATCHDOG_KILL_AFTER=300s RAW_CMSDRIVER_TIMEOUT=600s PREMIX_INPUT_MODE=$(premix_input_mode) PREMIX_REDIRECTOR=$(premix_redirector) PREMIX_CACHE_FILES=$(premix_cache_files) PREMIX_CACHE_TIMEOUT=7200s PREMIX_CACHE_RETRIES=3 PREMIX_CACHE_REDIRECTOR=$(premix_cache_redirector); tar -xzf $(processing_bundle_name); cd runtime/processing; bash run_chain.sh --inputs $(inputs) --modes $(modes) --analysis $(analysis) --campaign $(campaign) --job-id $(job_id) --max-events $(max_events) --enable-ntuple $(enable_ntuple) --efficiency-ntuple $(efficiency_ntuple) --shuffle-mixing $(shuffle_mixing) --cleanup $(cleanup)'"
+Executable = $(processing_wrapper_path)
+transfer_executable = True
+arguments = "$(proxy_bundle_name) $(processing_bundle_name) $(inputs) $(modes) $(analysis) $(campaign) $(job_id) $(max_events) $(enable_ntuple) $(efficiency_ntuple) $(cleanup) $(local_output_base) $(shuffle_mixing)"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT

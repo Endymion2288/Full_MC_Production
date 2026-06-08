@@ -15,9 +15,9 @@ LOCAL_LOG_DIR = $(log_dir)
 
 Universe = vanilla
 
-Executable = /bin/bash
-transfer_executable = False
-Arguments = "-lc 'set -euo pipefail; tar -xzf $(proxy_bundle_name); PROXY_TARGET=/tmp/x509up_u`id -u`; install -m 600 credentials/x509_user_proxy ${PROXY_TARGET}; rm -rf credentials; export X509_USER_PROXY=${PROXY_TARGET}; export LOCAL_OUTPUT_BASE=$(local_output_base); tar -xzf $(lhe_bundle_name); cd runtime/lhe_generation; bash run_helac.sh --pool $(pool) --seed $(seed) --min-pt-conia $(min_pt_conia) --min-pt-bonia $(min_pt_bonia) --min-pt-q $(min_pt_q) --unwevt $(unwevt) --test-mode $(test_mode)'"
+Executable = $(lhe_wrapper_path)
+transfer_executable = True
+arguments = "$(proxy_bundle_name) $(lhe_bundle_name) $(pool) $(seed) $(min_pt_conia) $(min_pt_bonia) $(min_pt_q) $(unwevt) $(test_mode) $(local_output_base)"
 
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT
