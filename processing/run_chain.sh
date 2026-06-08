@@ -1439,7 +1439,7 @@ Required options:
 Optional:
   --workdir DIR           Working directory (default: /srv/<campaign>_<job_id>)
   --enable-ntuple BOOL    是否执行 ntuple 步骤 (true|false)
-  --efficiency-ntuple BOOL 是否生成效率/acceptance full-GEN truth ntuple (true|false)
+  --efficiency-ntuple BOOL 是否生成效率/acceptance full-GEN truth ntuple (需要 --enable-ntuple true)
   --cleanup BOOL          是否清理中间文件 (true|false)
   --skip-to STEP          Skip to specified step (shower|mix|gensim|raw|reco|miniaod|ntuple)
   --stop-at STEP          Stop after specified step
@@ -1570,7 +1570,6 @@ if [[ "${EFFICIENCY_NTUPLE}" == "true" ]]; then
         msg_error "--efficiency-ntuple currently supports only JJP/JpsiJpsiPhi"
         exit 1
     fi
-    ENABLE_NTUPLE="true"
 fi
 
 if [[ "${CLEANUP}" != "true" ]] && [[ "${CLEANUP}" != "false" ]]; then
