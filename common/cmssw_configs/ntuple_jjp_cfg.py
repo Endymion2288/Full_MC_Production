@@ -1,9 +1,7 @@
 # ==============================================================================
 # ntuple_jjp_cfg.py - Ntuple configuration for JJP (J/psi + J/psi + phi) analysis
 # ==============================================================================
-# Deprecated reference config: the active T2_CN_Beijing workflow now runs
-# HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py with
-# analysisMode=JpsiJpsiPhi from the shared CMSSW_15 package.
+# Repo-owned config used by the production wrapper for JpsiJpsiPhi ntuples.
 # Based on TPS-Onia2MuMu-Dev-J-J-P branch
 # Reads MiniAOD and produces flat ntuple for physics analysis
 #
@@ -33,6 +31,9 @@ ivars.maxEvents = -1
 ivars.parseArguments()
 
 # Configuration flags
+ANALYSIS_MODE = 'JpsiJpsiPhi'
+DO_MONTE_CARLO_TREE = False
+REQUIRE_ACCEPTED_CANDIDATES_FOR_MONTE_CARLO_TREE = False
 AddCaloMuon = False
 runOnMC = ivars.runOnMC
 HIFormat = False
@@ -135,11 +136,13 @@ from PhysicsTools.PatAlgos.tools.trackTools import *
 
 # MultiLepPAT analyzer (J/psi + J/psi + phi)
 process.mkcands = cms.EDAnalyzer('MultiLepPAT',
+        analysisMode = cms.untracked.string(ANALYSIS_MODE),
         HLTriggerResults = cms.untracked.InputTag("TriggerResults","","HLT"),
         inputGEN  = cms.untracked.InputTag("genParticles"),
         VtxSample   = cms.untracked.string('offlineSlimmedPrimaryVertices'),
         DoJPsiMassConstraint = cms.untracked.bool(True),
-        DoMonteCarloTree = cms.untracked.bool(False),
+        DoMonteCarloTree = cms.untracked.bool(DO_MONTE_CARLO_TREE),
+        RequireAcceptedCandidatesForMonteCarloTree = cms.untracked.bool(REQUIRE_ACCEPTED_CANDIDATES_FOR_MONTE_CARLO_TREE),
         MonteCarloParticleId = cms.untracked.int32(20443),
         trackQualities = cms.untracked.vstring('loose','tight','highPurity'),
         MinNumMuPixHits = cms.untracked.int32(1),

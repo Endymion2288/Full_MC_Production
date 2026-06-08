@@ -29,9 +29,17 @@ cp helac_package.tar.gz /afs/cern.ch/user/c/chiw/condor/Full_MC_Production/commo
 
 The ntuple stage now uses one shared CMSSW 15 package for both `JJP` and `JUP`:
 - package path inside CMSSW: `src/HeavyFlavorAnalysis/TPS-Onia2MuMu`
-- runtime config: `HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py`
-- `JJP -> analysisMode=JpsiJpsiPhi`
-- `JUP -> analysisMode=JpsiUpsPhi`
+- runtime configs are repo-owned under `common/cmssw_configs/`
+- `JJP -> common/cmssw_configs/ntuple_jjp_cfg.py`
+- `JUP -> common/cmssw_configs/ntuple_jup_cfg.py`
+- JJP efficiency/acceptance -> `common/cmssw_configs/ntuple_jjp_efficiency_cfg.py`
+
+The wrapper passes only changing runtime values to `cmsRun`
+(`inputFiles`, `outputFile`, `runOnMC`, `maxEvents`). Persistent analyzer choices
+such as `analysisMode`, `DoMonteCarloTree`, and
+`RequireAcceptedCandidatesForMonteCarloTree` belong in the CMSSW config files.
+The current general-purpose default is
+`RequireAcceptedCandidatesForMonteCarloTree=False`.
 
 The maintained source now lives in this repo as a git submodule:
 - submodule path: `external/TPS-Onia2MuMu`
@@ -49,6 +57,10 @@ When no prebuilt CMSSW15 runtime is available, `dag_generator.py generate
 --include-ntuple` build `tpsonia2mumu_code.tar.gz` from the submodule
 automatically and insert it into the ntuple runtime bundle. No manual copy into
 `common/packages/` is needed.
+
+For `hepthu` local-storage DAGs the ntuple payload may be inserted into the
+processing runtime bundle so the ntuple can run inline with the local MiniAOD.
+For lxplus/T2 DAGs it is kept in a separate ntuple runtime bundle.
 
 ## 3. `cmssw15_tpsonia2mumu_runtime.tar.gz` (optional, preferred)
 

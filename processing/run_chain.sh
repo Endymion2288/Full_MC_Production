@@ -276,7 +276,11 @@ get_lhe_file() {
         else
             pool_subpath="lhe_pools/${pool_name}"
         fi
-        msg_error "No LHE files found in ${EOS_PATH_BASE}/${pool_subpath}" >&2
+        if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+            msg_error "No LHE files found in ${LOCAL_OUTPUT_BASE}/${pool_subpath}" >&2
+        else
+            msg_error "No LHE files found in ${EOS_PATH_BASE}/${pool_subpath}" >&2
+        fi
         return 1
     fi
 
@@ -295,19 +299,36 @@ list_lhe_files() {
         pool_subpath="lhe_pools/${pool_name}"
     fi
 
-    if ! file_list=$(run_xrdfs "${EOS_XRDFS_TARGET}" ls "${EOS_PATH_BASE}/${pool_subpath}" 2>/dev/null | grep '\.lhe$' | sort); then
-        msg_error "Failed to list LHE files via xrdfs at ${EOS_PATH_BASE}/${pool_subpath}" >&2
-        return 1
+    if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+        local local_pool_dir="${LOCAL_OUTPUT_BASE}/${pool_subpath}"
+        if [[ ! -d "${local_pool_dir}" ]]; then
+            msg_error "Local LHE directory not found: ${local_pool_dir}" >&2
+            return 1
+        fi
+
+        if ! file_list=$(find "${local_pool_dir}" -name "*.lhe" -type f | sort); then
+            msg_error "Failed to list LHE files from ${local_pool_dir}" >&2
+            return 1
+        fi
+    else
+        if ! file_list=$(run_xrdfs "${EOS_XRDFS_TARGET}" ls "${EOS_PATH_BASE}/${pool_subpath}" 2>/dev/null | grep '\.lhe$' | sort); then
+            msg_error "Failed to list LHE files via xrdfs at ${EOS_PATH_BASE}/${pool_subpath}" >&2
+            return 1
+        fi
     fi
 
     if [[ -z "${file_list}" ]]; then
         return 0
     fi
 
-    while IFS= read -r line; do
-        [[ -n "${line}" ]] || continue
-        printf 'root://%s/%s\n' "${EOS_HOST}" "${line}"
-    done <<< "${file_list}"
+    if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+        echo "${file_list}"
+    else
+        while IFS= read -r line; do
+            [[ -n "${line}" ]] || continue
+            printf 'root://%s/%s\n' "${EOS_HOST}" "${line}"
+        done <<< "${file_list}"
+    fi
 }
 
 # Check if a remote XRootD file exists
@@ -353,6 +374,9 @@ ensure_cmssw12_project() {
 setup_cmssw12() {
     msg_info "Setting up CMSSW_12_4_14..."
     source /cvmfs/cms.cern.ch/cmsset_default.sh
+    # Force el8 architecture for CMSSW_12
+    export SCRAM_ARCH=el8_amd64_gcc10
+    export SITECONFIG_PATH=/cvmfs/cms.cern.ch/SITECONF/T2_CN_Beijing
     
     # Create project on demand if needed
     local base_path
@@ -422,6 +446,8 @@ setup_cmssw15() {
 # EL9 container path for CMSSW_15
 EL9_CONTAINER="/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
 
+CMSSW12_CONTAINER="${CMSSW12_CONTAINER:-/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el8:x86_64}"
+
 running_on_el9() {
     [[ -f /etc/os-release ]] && grep -Eq '^(VERSION_ID="?9|PLATFORM_ID="platform:el9)' /etc/os-release
 }
@@ -443,6 +469,127 @@ run_el9_script_logged() {
         --env "HOME=${HOME}" \
         "${EL9_CONTAINER}" \
         /bin/bash "${script_path}"
+}
+
+container_runtime() {
+    if command -v apptainer >/dev/null 2>&1; then
+        echo apptainer
+        return 0
+    fi
+    if command -v singularity >/dev/null 2>&1; then
+        echo singularity
+        return 0
+    fi
+    msg_error "Neither apptainer nor singularity is available on this worker" >&2
+    return 1
+}
+
+host_needs_cmssw12_container() {
+    if [[ -r /etc/os-release ]] && grep -Eq '^VERSION_ID="9(\.[0-9]+)?"$' /etc/os-release; then
+        return 0
+    fi
+    if ! ldconfig -p 2>/dev/null | grep -q "libssl.so.1.1"; then
+        return 0
+    fi
+    return 1
+}
+
+run_in_cmssw12_container() {
+    local script_content="$1"
+    local tmp_script=""
+    local scratch_root=""
+    local siteconf_overlay=""
+    tmp_script=$(mktemp --suffix=_cmssw12_cmd.sh)
+    scratch_root=$(dirname "${WORKDIR}")
+    siteconf_overlay="${scratch_root}/cms_siteconf_overlay"
+    rm -rf "${siteconf_overlay}"
+    mkdir -p "${siteconf_overlay}"
+    cp -a /cvmfs/cms.cern.ch/SITECONF/T2_CN_Beijing "${siteconf_overlay}/"
+    ln -s T2_CN_Beijing "${siteconf_overlay}/local"
+    cat > "${tmp_script}" <<'SCRIPT_HEADER'
+#!/bin/bash
+set -e
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+export SCRAM_ARCH=el8_amd64_gcc10
+SCRIPT_HEADER
+
+    echo "${script_content}" >> "${tmp_script}"
+    chmod +x "${tmp_script}"
+
+    UNPACKED_IMAGE="${CMSSW12_CONTAINER}" \
+    X509_USER_PROXY="${X509_USER_PROXY:-}" \
+    HOME="${HOME}" \
+    /cvmfs/cms.cern.ch/common/cmssw-el8 \
+        -B "${scratch_root}" \
+        -B /tmp \
+        -B "${siteconf_overlay}:/cvmfs/cms.cern.ch/SITECONF" \
+        --command-to-run "/bin/bash ${tmp_script}"
+
+    local rc=$?
+    rm -f "${tmp_script}"
+    return ${rc}
+}
+
+quote_shell_words() {
+    local quoted=""
+    printf -v quoted '%q ' "$@"
+    printf '%s' "${quoted% }"
+}
+
+run_cmssw12_command() {
+    local label="$1"
+    shift
+
+    if host_needs_cmssw12_container; then
+        local cmd_text=""
+        cmd_text=$(quote_shell_words "$@")
+        msg_info "Running ${label} inside el8 container for CMSSW_12 compatibility..."
+        run_logged "${label}" run_in_cmssw12_container "
+cd '${CMSSW_12_BASE}/src'
+eval \$(scramv1 runtime -sh)
+cd - >/dev/null
+${cmd_text}
+"
+        return $?
+    fi
+
+    run_logged "${label}" "$@"
+}
+
+validate_root_file() {
+    local label="$1"
+    local file_path="$2"
+
+    if [[ ! -s "${file_path}" ]]; then
+        msg_error "${label} output missing or empty: ${file_path}"
+        return 1
+    fi
+
+    local checker="${WORKDIR}/validate_root_file.py"
+    cat > "${checker}" <<'PYCHECK'
+import sys
+
+import ROOT
+
+path = sys.argv[1]
+root_file = ROOT.TFile.Open(path)
+if not root_file:
+    print(f"ROOT validation failed: could not open {path}", file=sys.stderr)
+    sys.exit(2)
+if root_file.IsZombie():
+    print(f"ROOT validation failed: zombie file {path}", file=sys.stderr)
+    sys.exit(3)
+if root_file.TestBit(ROOT.TFile.kRecovered):
+    print(f"ROOT validation failed: recovered/incompletely closed file {path}", file=sys.stderr)
+    sys.exit(4)
+if root_file.GetNkeys() <= 0:
+    print(f"ROOT validation failed: no keys in {path}", file=sys.stderr)
+    sys.exit(5)
+print(f"ROOT validation OK: {path} keys={root_file.GetNkeys()}")
+sys.exit(0)
+PYCHECK
+
+    run_cmssw12_command "validate_root_${label}" python3 "${checker}" "${file_path}"
 }
 
 # Run command inside el9 container using apptainer
@@ -474,6 +621,149 @@ SCRIPT_HEADER
     local rc=$?
     rm -f "${tmp_script}"
     return ${rc}
+}
+
+prepare_premix_filelist() {
+    local source_list="$1"
+    local output_list="${WORKDIR}/premix_input_eoscms.txt"
+    local redirector="${PREMIX_REDIRECTOR:-root://eoscms.cern.ch}"
+
+    if [[ ! -f "${source_list}" ]]; then
+        msg_error "Premix source filelist not found: ${source_list}"
+        return 1
+    fi
+
+    msg_info "Preparing premix filelist via ${redirector}..." >&2
+    python3 - "${source_list}" "${output_list}" "${redirector}" <<'PYHELPER'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+output = Path(sys.argv[2])
+redirector = sys.argv[3].rstrip('/')
+converted = []
+for raw in source.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith('#'):
+        continue
+    if '/store/' in line:
+        store_path = '/store/' + line.split('/store/', 1)[1]
+        converted.append(f"{redirector}//{store_path.lstrip('/')}")
+    else:
+        converted.append(line)
+output.write_text('\n'.join(converted) + '\n')
+print(f"wrote {len(converted)} entries to {output}", file=sys.stderr)
+PYHELPER
+    echo "${output_list}"
+}
+
+prepare_cached_premix_filelist() {
+    local source_list="$1"
+    local output_list="${WORKDIR}/premix_input_localcache.txt"
+    local cache_dir="${WORKDIR}/premix_cache"
+    local redirector="${PREMIX_CACHE_REDIRECTOR:-${PREMIX_REDIRECTOR:-root://eoscms.cern.ch}}"
+    local n_files="${PREMIX_CACHE_FILES:-1}"
+    local timeout_seconds="${PREMIX_CACHE_TIMEOUT:-7200s}"
+    local retries="${PREMIX_CACHE_RETRIES:-3}"
+
+    if [[ ! -f "${source_list}" ]]; then
+        msg_error "Premix source filelist not found: ${source_list}"
+        return 1
+    fi
+    if ! [[ "${n_files}" =~ ^[0-9]+$ ]] || [[ "${n_files}" -le 0 ]]; then
+        msg_error "PREMIX_CACHE_FILES must be a positive integer"
+        return 1
+    fi
+
+    mkdir -p "${cache_dir}"
+    python3 - "${source_list}" "${cache_dir}" "${output_list}" "${redirector}" "${n_files}" "${timeout_seconds}" "${retries}" <<'PYHELPER'
+import subprocess
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+cache_dir = Path(sys.argv[2])
+output = Path(sys.argv[3])
+redirector = sys.argv[4].rstrip('/')
+n_files = int(sys.argv[5])
+timeout_seconds = sys.argv[6]
+retries = int(sys.argv[7])
+
+urls = []
+for raw in source.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith('#'):
+        continue
+    if '/store/' in line:
+        store_path = '/store/' + line.split('/store/', 1)[1]
+        urls.append(f"{redirector}//{store_path.lstrip('/')}")
+    else:
+        urls.append(line)
+    if len(urls) >= n_files:
+        break
+
+if not urls:
+    raise SystemExit("no premix URLs found")
+
+local_files = []
+for index, url in enumerate(urls):
+    local = cache_dir / f"premix_{index}.root"
+    if not local.exists() or local.stat().st_size == 0:
+        for attempt in range(1, retries + 1):
+            cmd = ["timeout", "--preserve-status", timeout_seconds, "xrdcp", "--nopbar", "-f", url, str(local)]
+            proc = subprocess.run(cmd)
+            if proc.returncode == 0 and local.exists() and local.stat().st_size > 0:
+                break
+            if local.exists():
+                local.unlink()
+        else:
+            raise SystemExit(f"failed to cache premix file: {url}")
+    local_files.append(f"file:{local}")
+
+output.write_text("\n".join(local_files) + "\n")
+print(f"cached {len(local_files)} premix files to {cache_dir}", file=sys.stderr)
+PYHELPER
+    echo "${output_list}"
+}
+
+prepare_local_pool_premix_filelist() {
+    local pool_dir="${PREMIX_LOCAL_POOL_DIR:-}"
+    local output_list="${WORKDIR}/premix_input_localpool.txt"
+    local max_files="${PREMIX_LOCAL_POOL_FILES:-0}"
+
+    if [[ -z "${pool_dir}" ]]; then
+        msg_error "PREMIX_LOCAL_POOL_DIR must point to a directory of local premix ROOT files"
+        return 1
+    fi
+    if [[ ! -d "${pool_dir}" ]]; then
+        msg_error "Premix local pool directory not found: ${pool_dir}"
+        return 1
+    fi
+    if ! [[ "${max_files}" =~ ^[0-9]+$ ]]; then
+        msg_error "PREMIX_LOCAL_POOL_FILES must be a non-negative integer"
+        return 1
+    fi
+
+    python3 - "${pool_dir}" "${output_list}" "${max_files}" <<'PYHELPER'
+import sys
+from pathlib import Path
+
+pool_dir = Path(sys.argv[1])
+output = Path(sys.argv[2])
+max_files = int(sys.argv[3])
+
+files = sorted(
+    path for path in pool_dir.glob("*.root")
+    if path.is_file() and path.stat().st_size > 0
+)
+if max_files > 0:
+    files = files[:max_files]
+if not files:
+    raise SystemExit(f"no non-empty ROOT files found in {pool_dir}")
+output.write_text("".join(f"file:{path}\n" for path in files))
+print(f"wrote {len(files)} local premix files to {output}", file=sys.stderr)
+PYHELPER
+    echo "${output_list}"
 }
 
 run_cmsrun_cmssw15() {
@@ -643,6 +933,24 @@ prepare_cmssw15_for_ntuple() {
     prepare_cmssw15_from_package "$@"
 }
 
+ntuple_cfg_path() {
+    local efficiency_mode="${1:-false}"
+
+    if [[ "${efficiency_mode}" == "true" ]]; then
+        case "${ANALYSIS_TYPE}" in
+            "JJP") echo "${CMSSW_CONFIGS_DIR}/ntuple_jjp_efficiency_cfg.py" ;;
+            *) return 1 ;;
+        esac
+        return 0
+    fi
+
+    case "${ANALYSIS_TYPE}" in
+        "JJP") echo "${CMSSW_CONFIGS_DIR}/ntuple_jjp_cfg.py" ;;
+        "JUP") echo "${CMSSW_CONFIGS_DIR}/ntuple_jup_cfg.py" ;;
+        *) return 1 ;;
+    esac
+}
+
 # ==============================================================================
 # Processing Steps
 # ==============================================================================
@@ -771,7 +1079,15 @@ run_mix() {
         run_logged "event_mixer_single" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[0]}"
     else
         msg_info "Mixing ${n_sources} sources..."
-        run_logged "event_mixer_multi" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[@]}"
+        if [[ "${SHUFFLE_MIXING}" == "true" ]]; then
+            local shuffle_seed=$((JOB_ID * 1000 + 1))
+            msg_info "Shuffle mixing enabled with seed base ${shuffle_seed}"
+            run_logged "event_mixer_shuffle" ./event_mixer_multisource \
+                "${MIXED_HEPMC}" "${HEPMC_FILES[@]}" \
+                --shuffle-sources --shuffle-seed-base "${shuffle_seed}"
+        else
+            run_logged "event_mixer_multi" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[@]}"
+        fi
     fi
     
     if [[ ! -f "${MIXED_HEPMC}" ]]; then
@@ -800,7 +1116,7 @@ run_gensim() {
     setup_cmssw12
     
     msg_info "Running HepMC -> GEN-SIM..."
-    run_logged "cmsRun_hepmc_to_GENSIM" cmsRun "${CMSSW_CONFIGS_DIR}/hepmc_to_GENSIM.py" \
+    run_cmssw12_command "cmsRun_hepmc_to_GENSIM" cmsRun "${CMSSW_CONFIGS_DIR}/hepmc_to_GENSIM.py" \
         inputFiles="file:${MIXED_HEPMC}" \
         outputFile="file:${GENSIM_OUTPUT}" \
         maxEvents=${MAX_EVENTS} \
@@ -823,9 +1139,38 @@ run_raw() {
     setup_cmssw12
     
     local cfg_file=$(mktemp --suffix=_raw_cfg.py)
+    local raw_threads="${RAW_THREADS:-1}"
+    local raw_streams="${RAW_STREAMS:-1}"
+    local raw_watchdog_timeout="${RAW_WATCHDOG_TIMEOUT:-7200s}"
+    local raw_watchdog_kill_after="${RAW_WATCHDOG_KILL_AFTER:-300s}"
+
+    local premix_mode="${PREMIX_INPUT_MODE:-eoscms}"
+    local premix_input=""
+    case "${premix_mode}" in
+        dbs)
+            premix_input="dbs:/Neutrino_E-10_gun/Run3Summer21PrePremix-Summer22_124X_mcRun3_2022_realistic_v11-v2/PREMIX"
+            ;;
+        eoscms|filelist)
+            local premix_filelist="/cvmfs/cms.cern.ch/offcomp-prod/premixPUlist/PREMIX-Run3Summer22DRPremix.txt"
+            local premix_runtime_filelist=""
+            premix_runtime_filelist=$(prepare_premix_filelist "${premix_filelist}") || return 1
+            premix_input="filelist:${premix_runtime_filelist}"
+            ;;
+        localcache)
+            local premix_filelist="/cvmfs/cms.cern.ch/offcomp-prod/premixPUlist/PREMIX-Run3Summer22DRPremix.txt"
+            local premix_runtime_filelist=""
+            premix_runtime_filelist=$(prepare_cached_premix_filelist "${premix_filelist}") || return 1
+            premix_input="filelist:${premix_runtime_filelist}"
+            ;;
+        *)
+            msg_error "Unknown PREMIX_INPUT_MODE=${premix_mode}; expected eoscms, filelist, localcache or dbs"
+            return 1
+            ;;
+    esac
     
-    msg_info "Generating RAW config..."
-    run_logged "cmsDriver_step2_raw" cmsDriver.py step2 \
+    local raw_cmsdriver_timeout="${RAW_CMSDRIVER_TIMEOUT:-600s}"
+    msg_info "Generating RAW config with PREMIX_INPUT_MODE=${premix_mode}..."
+    run_logged "cmsDriver_step2_raw" timeout --preserve-status --kill-after=60s "${raw_cmsdriver_timeout}" cmsDriver.py step2 \
         --mc --no_exec \
         --python_filename "${cfg_file}" \
         --eventcontent PREMIXRAW \
@@ -839,13 +1184,13 @@ run_raw() {
         --geometry DB:Extended \
         -n "${MAX_EVENTS}" \
         --customise Configuration/DataProcessing/Utils.addMonitoring \
-        --nThreads 4 --nStreams 4 \
-        --pileup_input "filelist:/cvmfs/cms.cern.ch/offcomp-prod/premixPUlist/PREMIX-Run3Summer22DRPremix.txt" \
+        --nThreads "${raw_threads}" --nStreams "${raw_streams}" \
+        --pileup_input "${premix_input}" \
         --filein "file:${GENSIM_OUTPUT}" \
         --fileout "file:${RAW_OUTPUT}"
     
-    msg_info "Running RAW step..."
-    run_logged "cmsRun_step2_raw" cmsRun "${cfg_file}"
+    msg_info "Running RAW step with nThreads=${raw_threads}, nStreams=${raw_streams}, watchdog=${raw_watchdog_timeout}..."
+    run_cmssw12_command "cmsRun_step2_raw" timeout --preserve-status --kill-after="${raw_watchdog_kill_after}" "${raw_watchdog_timeout}" cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${RAW_OUTPUT}" ]]; then
@@ -885,7 +1230,7 @@ run_reco() {
         --fileout "file:${RECO_OUTPUT}"
     
     msg_info "Running RECO step..."
-    run_logged "cmsRun_step3_reco" cmsRun "${cfg_file}"
+    run_cmssw12_command "cmsRun_step3_reco" cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${RECO_OUTPUT}" ]]; then
@@ -923,7 +1268,7 @@ run_miniaod() {
         --fileout "file:${MINIAOD_OUTPUT}"
     
     msg_info "Running MiniAOD step..."
-    run_logged "cmsRun_step4_miniaod" cmsRun "${cfg_file}"
+    run_cmssw12_command "cmsRun_step4_miniaod" cmsRun "${cfg_file}"
     rm -f "${cfg_file}"
     
     if [[ ! -f "${MINIAOD_OUTPUT}" ]]; then
@@ -971,15 +1316,22 @@ run_ntuple() {
     prepare_cmssw15_for_ntuple "${ANALYSIS_TYPE}" || return 1
     setup_cmssw15
 
-    msg_info "Running ${ANALYSIS_TYPE} Ntuple analysis via ConfFile_cfg.py (${analysis_mode})..."
-    run_cmsrun_cmssw15 "HeavyFlavorAnalysis/TPS-Onia2MuMu/test/ConfFile_cfg.py" \
+    cfg_path=$(ntuple_cfg_path "${EFFICIENCY_NTUPLE}") || {
+        msg_error "No repo-owned ntuple config is available for ${ANALYSIS_TYPE} with efficiency_ntuple=${EFFICIENCY_NTUPLE}"
+        return 1
+    }
+
+    if [[ ! -f "${cfg_path}" ]]; then
+        msg_error "Ntuple config missing: ${cfg_path}"
+        return 1
+    fi
+
+    msg_info "Running ${ANALYSIS_TYPE} Ntuple analysis via ${cfg_path}..."
+    run_cmsrun_cmssw15 "${cfg_path}" \
         inputFiles="file:${MINIAOD_OUTPUT}" \
         outputFile="${NTUPLE_OUTPUT}" \
-        analysisMode="${analysis_mode}" \
         runOnMC=True \
-        era=Run2022 \
-        maxEvents=-1 \
-        requireAcceptedCandidatesForMonteCarloTree=False
+        maxEvents=-1
     
     if [[ ! -f "${NTUPLE_OUTPUT}" ]]; then
         msg_error "Ntuple step failed: ${NTUPLE_OUTPUT} not created"
@@ -991,9 +1343,51 @@ run_ntuple() {
 
 # Step 8: Transfer output
 transfer_output() {
-    msg_step "Step 8: Transfer to T2_CN_Beijing Storage"
-    
     local output_subpath="output/${CAMPAIGN_NAME}/${JOB_ID}"
+
+    if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+        msg_step "Step 8: Copy outputs to local storage"
+        local local_output_dir="${LOCAL_OUTPUT_BASE}/${output_subpath}"
+        mkdir -p "${local_output_dir}" || return 1
+
+        if [[ -f "${MINIAOD_OUTPUT}" ]]; then
+            local miniaod_basename
+            miniaod_basename=$(basename "${MINIAOD_OUTPUT}")
+            run_logged "copy_local_miniaod_${JOB_ID}" cp -f "${MINIAOD_OUTPUT}" "${local_output_dir}/${miniaod_basename}" || return 1
+        fi
+
+        if [[ -f "${NTUPLE_OUTPUT:-}" ]]; then
+            local ntuple_basename
+            ntuple_basename=$(basename "${NTUPLE_OUTPUT}")
+            run_logged "copy_local_ntuple_${JOB_ID}" cp -f "${NTUPLE_OUTPUT}" "${local_output_dir}/${ntuple_basename}" || return 1
+
+            if [[ "${EFFICIENCY_NTUPLE}" == "true" ]]; then
+                local manifest_file="${WORKDIR}/ntuple_manifest_${CAMPAIGN_NAME}_${JOB_ID}.json"
+                cat > "${manifest_file}" << MANIFESTEOF
+{
+  "${CAMPAIGN_NAME}": [
+    "${local_output_dir}/${ntuple_basename}"
+  ]
+}
+MANIFESTEOF
+                run_logged "copy_local_ntuple_manifest_${JOB_ID}" cp -f "${manifest_file}" "${local_output_dir}/$(basename "${manifest_file}")" || return 1
+            fi
+        fi
+
+        if [[ "${CLEANUP}" == "true" ]]; then
+            msg_info "Cleaning up intermediate files..."
+            rm -f "${WORKDIR}"/*.hepmc
+            rm -f "${WORKDIR}"/output_GENSIM.root
+            rm -f "${WORKDIR}"/output_RAW.root
+            rm -f "${WORKDIR}"/output_RECO.root
+            msg_ok "Cleanup complete"
+        fi
+
+        msg_ok "Local copy complete: ${local_output_dir}/"
+        return 0
+    fi
+
+    msg_step "Step 8: Transfer to T2_CN_Beijing Storage"
     
     # Create remote directory
     make_remote_dir "${output_subpath}" || return 1
@@ -1004,9 +1398,21 @@ transfer_output() {
         stage_out "${MINIAOD_OUTPUT}" "${output_subpath}/${miniaod_basename}" || return 1
     fi
     
-    if [[ -f "${NTUPLE_OUTPUT}" ]]; then
+    if [[ -f "${NTUPLE_OUTPUT:-}" ]]; then
         local ntuple_basename=$(basename "${NTUPLE_OUTPUT}")
         stage_out "${NTUPLE_OUTPUT}" "${output_subpath}/${ntuple_basename}" || return 1
+
+        if [[ "${EFFICIENCY_NTUPLE}" == "true" ]]; then
+            local manifest_file="${WORKDIR}/ntuple_manifest_${CAMPAIGN_NAME}_${JOB_ID}.json"
+            cat > "${manifest_file}" << MANIFESTEOF
+{
+  "${CAMPAIGN_NAME}": [
+    "${EOS_BASE}/${output_subpath}/${ntuple_basename}"
+  ]
+}
+MANIFESTEOF
+            stage_out "${manifest_file}" "${output_subpath}/$(basename "${manifest_file}")" || return 1
+        fi
     fi
     
     # Cleanup intermediate files
@@ -1041,6 +1447,8 @@ Required options:
 Optional:
   --workdir DIR           Working directory (default: /srv/<campaign>_<job_id>)
   --enable-ntuple BOOL    是否执行 ntuple 步骤 (true|false)
+  --efficiency-ntuple BOOL 是否生成效率/acceptance full-GEN truth ntuple (需要 --enable-ntuple true)
+  --shuffle-mixing BOOL   是否对多输入源启用确定性 shuffle mixing (true|false)
   --cleanup BOOL          是否清理中间文件 (true|false)
   --skip-to STEP          Skip to specified step (shower|mix|gensim|raw|reco|miniaod|ntuple)
   --stop-at STEP          Stop after specified step
@@ -1071,6 +1479,8 @@ JOB_ID=""
 WORKDIR=""
 CLEANUP="true"
 ENABLE_NTUPLE="true"
+EFFICIENCY_NTUPLE="false"
+SHUFFLE_MIXING="false"
 SKIP_TO=""
 STOP_AT=""
 MAX_EVENTS=-1
@@ -1105,6 +1515,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable-ntuple)
             ENABLE_NTUPLE="$2"
+            shift 2
+            ;;
+        --efficiency-ntuple)
+            EFFICIENCY_NTUPLE="$2"
+            shift 2
+            ;;
+        --shuffle-mixing)
+            SHUFFLE_MIXING="$2"
             shift 2
             ;;
         --cleanup)
@@ -1156,6 +1574,23 @@ if [[ "${ENABLE_NTUPLE}" != "true" ]] && [[ "${ENABLE_NTUPLE}" != "false" ]]; th
     exit 1
 fi
 
+if [[ "${EFFICIENCY_NTUPLE}" != "true" ]] && [[ "${EFFICIENCY_NTUPLE}" != "false" ]]; then
+    msg_error "--efficiency-ntuple must be true or false"
+    exit 1
+fi
+
+if [[ "${EFFICIENCY_NTUPLE}" == "true" ]]; then
+    if [[ "${ANALYSIS_TYPE}" != "JJP" ]]; then
+        msg_error "--efficiency-ntuple currently supports only JJP/JpsiJpsiPhi"
+        exit 1
+    fi
+fi
+
+if [[ "${SHUFFLE_MIXING}" != "true" ]] && [[ "${SHUFFLE_MIXING}" != "false" ]]; then
+    msg_error "--shuffle-mixing must be true or false"
+    exit 1
+fi
+
 if [[ "${CLEANUP}" != "true" ]] && [[ "${CLEANUP}" != "false" ]]; then
     msg_error "--cleanup must be true or false"
     exit 1
@@ -1173,7 +1608,7 @@ fi
 
 # Default workdir inside the worker scratch to avoid writing to AFS
 if [[ -z "${WORKDIR}" ]]; then
-    WORKDIR="/srv/${CAMPAIGN_NAME}_${JOB_ID}"
+    WORKDIR="${_CONDOR_SCRATCH_DIR:-$PWD}/${CAMPAIGN_NAME}_${JOB_ID}"
 fi
 export HOME="${WORKDIR}"
 
@@ -1249,6 +1684,7 @@ echo "Job ID:       ${JOB_ID}"
 echo "Analysis:     ${ANALYSIS_TYPE}"
 echo "Work dir:     ${WORKDIR}"
 echo "Do ntuple:    ${ENABLE_NTUPLE}"
+echo "Eff ntuple:   ${EFFICIENCY_NTUPLE}"
 echo "N sources:    ${#LHE_FILES[@]}"
 for ((i=0; i<${#LHE_FILES[@]}; i++)); do
     mode_str="${SHOWER_MODES[$i]:-N/A}"
@@ -1352,5 +1788,9 @@ fi
 msg_step "Production Complete!"
 echo "Campaign:  ${CAMPAIGN_NAME}"
 echo "Job ID:    ${JOB_ID}"
-echo "Output:    ${EOS_OUTPUT}/${CAMPAIGN_NAME}/${JOB_ID}/"
+if [[ -n "${LOCAL_OUTPUT_BASE:-}" ]]; then
+    echo "Output:    ${LOCAL_OUTPUT_BASE}/output/${CAMPAIGN_NAME}/${JOB_ID}/"
+else
+    echo "Output:    ${EOS_OUTPUT}/${CAMPAIGN_NAME}/${JOB_ID}/"
+fi
 echo ""

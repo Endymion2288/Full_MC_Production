@@ -155,24 +155,85 @@ int main(int argc, char* argv[]) {
             cerr << "[WARN] Pythia setting not found (parm): " << name << endl;
         }
     };
+    auto readSetting = [&](const string& setting) {
+        if (!pythia.readString(setting)) {
+            cerr << "[WARN] Failed to apply Pythia setting: " << setting << endl;
+        }
+    };
     
     // LHE 输入与通用 Run 3 CP5 配置
     pythia.readString("Beams:frameType = 4"); // Read from LHEF
     pythia.readString("Beams:LHEF = " + inputFile);
     pythia.readString("Beams:eCM = 13600."); // 13.6 TeV Run3
     setModeIfExists("Tune:preferLHAPDF", 2);
-    pythia.readString("Main:timesAllowErrors = 10000");
+    readSetting("Main:timesAllowErrors = 10000");
     setParmIfExists("Check:epTolErr", 0.01);
     setParmIfExists("SLHA:minMassSM", 1000.);
-    pythia.readString("ParticleDecays:limitTau0 = on");
-    pythia.readString("ParticleDecays:tau0Max = 10");
+    readSetting("ParticleDecays:limitTau0 = on");
+    readSetting("ParticleDecays:tau0Max = 10");
     setFlagIfExists("HadronLevel:QED", true);
     setFlagIfExists("Beams:setProductionScalesFromLHEF", false);
+    readSetting("SpaceShower:pTmaxMatch = 1");
+    readSetting("SpaceShower:pTmaxFudge = 1");
+    readSetting("SpaceShower:MEcorrections = off");
+    readSetting("TimeShower:pTmaxMatch = 1");
+    readSetting("TimeShower:pTmaxFudge = 1");
+    readSetting("TimeShower:MEcorrections = off");
+    readSetting("TimeShower:globalRecoil = on");
+    readSetting("TimeShower:limitPTmaxGlobal = on");
+    readSetting("TimeShower:nMaxGlobalRecoil = 1");
+    readSetting("TimeShower:globalRecoilMode = 2");
+    readSetting("TimeShower:nMaxGlobalBranch = 1");
+    readSetting("TimeShower:weightGluonToQuark = 1");
+    readSetting("UncertaintyBands:doVariations = on");
+    readSetting(
+        "UncertaintyBands:List = {"
+        "isrRedHi isr:muRfac=0.707,fsrRedHi fsr:muRfac=0.707,isrRedLo isr:muRfac=1.414,fsrRedLo fsr:muRfac=1.414,"
+        "isrDefHi isr:muRfac=0.5,fsrDefHi fsr:muRfac=0.5,isrDefLo isr:muRfac=2.0,fsrDefLo fsr:muRfac=2.0,"
+        "isrConHi isr:muRfac=0.25,fsrConHi fsr:muRfac=0.25,isrConLo isr:muRfac=4.0,fsrConLo fsr:muRfac=4.0,"
+        "fsr_G2GG_muR_dn fsr:G2GG:muRfac=0.5,"
+        "fsr_G2GG_muR_up fsr:G2GG:muRfac=2.0,"
+        "fsr_G2QQ_muR_dn fsr:G2QQ:muRfac=0.5,"
+        "fsr_G2QQ_muR_up fsr:G2QQ:muRfac=2.0,"
+        "fsr_Q2QG_muR_dn fsr:Q2QG:muRfac=0.5,"
+        "fsr_Q2QG_muR_up fsr:Q2QG:muRfac=2.0,"
+        "fsr_X2XG_muR_dn fsr:X2XG:muRfac=0.5,"
+        "fsr_X2XG_muR_up fsr:X2XG:muRfac=2.0,"
+        "fsr_G2GG_cNS_dn fsr:G2GG:cNS=-2.0,"
+        "fsr_G2GG_cNS_up fsr:G2GG:cNS=2.0,"
+        "fsr_G2QQ_cNS_dn fsr:G2QQ:cNS=-2.0,"
+        "fsr_G2QQ_cNS_up fsr:G2QQ:cNS=2.0,"
+        "fsr_Q2QG_cNS_dn fsr:Q2QG:cNS=-2.0,"
+        "fsr_Q2QG_cNS_up fsr:Q2QG:cNS=2.0,"
+        "fsr_X2XG_cNS_dn fsr:X2XG:cNS=-2.0,"
+        "fsr_X2XG_cNS_up fsr:X2XG:cNS=2.0,"
+        "isr_G2GG_muR_dn isr:G2GG:muRfac=0.5,"
+        "isr_G2GG_muR_up isr:G2GG:muRfac=2.0,"
+        "isr_G2QQ_muR_dn isr:G2QQ:muRfac=0.5,"
+        "isr_G2QQ_muR_up isr:G2QQ:muRfac=2.0,"
+        "isr_Q2QG_muR_dn isr:Q2QG:muRfac=0.5,"
+        "isr_Q2QG_muR_up isr:Q2QG:muRfac=2.0,"
+        "isr_X2XG_muR_dn isr:X2XG:muRfac=0.5,"
+        "isr_X2XG_muR_up isr:X2XG:muRfac=2.0,"
+        "isr_G2GG_cNS_dn isr:G2GG:cNS=-2.0,"
+        "isr_G2GG_cNS_up isr:G2GG:cNS=2.0,"
+        "isr_G2QQ_cNS_dn isr:G2QQ:cNS=-2.0,"
+        "isr_G2QQ_cNS_up isr:G2QQ:cNS=2.0,"
+        "isr_Q2QG_cNS_dn isr:Q2QG:cNS=-2.0,"
+        "isr_Q2QG_cNS_up isr:Q2QG:cNS=2.0,"
+        "isr_X2XG_cNS_dn isr:X2XG:cNS=-2.0,"
+        "isr_X2XG_cNS_up isr:X2XG:cNS=2.0}"
+    );
+    readSetting("UncertaintyBands:nFlavQ = 4");
+    readSetting("UncertaintyBands:MPIshowers = on");
+    readSetting("UncertaintyBands:overSampleFSR = 10.0");
+    readSetting("UncertaintyBands:overSampleISR = 10.0");
+    readSetting("UncertaintyBands:FSRpTmin2Fac = 20");
+    readSetting("UncertaintyBands:ISRpTmin2Fac = 20");
     
     // Onia settings (guarded by availability in the installed Pythia version)
     setParmIfExists("Onia:massSplit", 0.2);
     setFlagIfExists("Onia:forceMassSplit", true);
-    setFlagIfExists("OniaShower:all", true);
     setModeIfExists("OniaShower:octetSplit", 1);
 
 
