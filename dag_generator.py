@@ -67,9 +67,12 @@ LHE_SUBMIT_TEMPLATE_LXPLUS = "processing/templates/lhe_gen.sub"
 PROCESSING_SUBMIT_TEMPLATE_LXPLUS = "processing/templates/processing.sub"
 LHE_SUBMIT_TEMPLATE_HEPTHU = "processing/templates/lhe_gen_hepthu.sub"
 PROCESSING_SUBMIT_TEMPLATE_HEPTHU = "processing/templates/processing_hepthu.sub"
+LHE_SUBMIT_TEMPLATE_LOCAL = "processing/templates/lhe_gen_local.sub"
+PROCESSING_SUBMIT_TEMPLATE_LOCAL = "processing/templates/processing_local.sub"
 SUMMARY_SUBMIT_TEMPLATE = "processing/templates/summary.sub"
 DEFAULT_LXPLUS_LOG_DIR = "/afs/cern.ch/user/x/xcheng/condor/MC_Production_DAG/T2_CN_Beijing/log"
 DEFAULT_HEPTHU_OUTPUT_BASE = os.path.expanduser("~/MC_Production_result")
+DEFAULT_LOCAL_CONDOR_OUTPUT_BASE = os.path.expanduser("~/MC_Production_result")
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,21 @@ MACHINE_ENVS: "OrderedDict[str, MachineEnv]" = OrderedDict(
                 lhe_submit_template=LHE_SUBMIT_TEMPLATE_HEPTHU,
                 processing_submit_template=PROCESSING_SUBMIT_TEMPLATE_HEPTHU,
                 target_machine="nd-16.hepthu.com",
+            ),
+        ),
+        (
+            "local_condor",
+            MachineEnv(
+                name="local_condor",
+                description="Local HTCondor submit; store output on local filesystem.",
+                backend="condor_dagman",
+                submit_host="local HTCondor",
+                storage_description="Local filesystem storage",
+                storage_mode="local",
+                required_commands=("python3", "condor_submit", "condor_submit_dag", "condor_q", "apptainer"),
+                local_output_base=DEFAULT_LOCAL_CONDOR_OUTPUT_BASE,
+                lhe_submit_template=LHE_SUBMIT_TEMPLATE_LOCAL,
+                processing_submit_template=PROCESSING_SUBMIT_TEMPLATE_LOCAL,
             ),
         ),
         (
@@ -361,6 +379,8 @@ class WorkflowOptions:
         maxjobs_processing: int = 50,
         maxjobs_ntuple: int = 30,
         cmssw15_runtime_tarball: Optional[str] = None,
+        shuffle_mixing: bool = False,
+        strict_vtx_smearing_check: bool = False,
     ):
         self.machine_env = machine_env or MACHINE_ENVS["lxplus_t2_ihep"]
         self.jobs_per_campaign = jobs_per_campaign
@@ -382,6 +402,8 @@ class WorkflowOptions:
         self.maxjobs_processing = maxjobs_processing
         self.maxjobs_ntuple = maxjobs_ntuple
         self.cmssw15_runtime_tarball = cmssw15_runtime_tarball
+        self.shuffle_mixing = shuffle_mixing
+        self.strict_vtx_smearing_check = strict_vtx_smearing_check
 
     def resolved_lhe_unwevt(self) -> int:
         if self.lhe_unwevt is not None:
@@ -410,6 +432,8 @@ class WorkflowOptions:
             "maxjobs_processing": self.maxjobs_processing,
             "maxjobs_ntuple": self.maxjobs_ntuple,
             "cmssw15_runtime_tarball": self.cmssw15_runtime_tarball,
+            "shuffle_mixing": self.shuffle_mixing,
+            "strict_vtx_smearing_check": self.strict_vtx_smearing_check,
         }
 
 
@@ -642,7 +666,20 @@ def detect_machine_env_name() -> str:
         return "hepthu"
     if "ihep" in hostname or "lxlogin" in hostname:
         return "ihep"
+    if os.environ.get("LOCAL_OUTPUT_BASE"):
+        return "local_condor"
     return "lxplus_t2_ihep"
+
+
+def requested_machine_env_name(args: argparse.Namespace) -> str:
+    machine_env_name = getattr(args, "machine_env", "auto")
+    if getattr(args, "local_condor", False):
+        if machine_env_name not in {"auto", "local_condor"}:
+            raise ValueError(
+                "--local-condor cannot be combined with --machine-env unless it is local_condor"
+            )
+        return "local_condor"
+    return machine_env_name
 
 
 def resolve_machine_env(name: str) -> MachineEnv:
@@ -1739,7 +1776,8 @@ class DAGBuilder:
             "inputs=\"{inputs}\" modes=\"{modes}\" analysis=\"{analysis}\" "
             "n_sources=\"{n_sources}\" max_events=\"{max_events}\" "
             "enable_ntuple=\"{enable_ntuple}\" efficiency_ntuple=\"{efficiency_ntuple}\" cleanup=\"{cleanup}\" "
-            "request_cpus=\"{request_cpus}\" request_memory=\"{request_memory}\" request_disk=\"{request_disk}\" "
+            "request_cpus=\"{request_cpus}\" request_disk=\"{request_disk}\" request_memory=\"{request_memory}\" "
+            "shuffle_mixing=\"{shuffle_mixing}\" "
             "processing_bundle_path=\"{processing_bundle_path}\" "
             "processing_bundle_name=\"{processing_bundle_name}\" "
             "proxy_bundle_path=\"{proxy_bundle_path}\" proxy_bundle_name=\"{proxy_bundle_name}\" "
@@ -1762,8 +1800,9 @@ class DAGBuilder:
                 efficiency_ntuple=dag_escape(bool_string(self.options.efficiency_ntuple)),
                 cleanup=dag_escape(bool_string(self.options.cleanup)),
                 request_cpus=dag_escape(request_cpus),
-                request_memory=dag_escape(request_memory),
                 request_disk=dag_escape(request_disk),
+                request_memory=dag_escape(request_memory),
+                shuffle_mixing=dag_escape(bool_string(self.options.shuffle_mixing)),
                 processing_bundle_path=dag_escape(self.runtime_assets["processing_bundle_path"]),
                 processing_bundle_name=dag_escape(self.runtime_assets["processing_bundle_name"]),
                 proxy_bundle_path=dag_escape(self.runtime_assets["proxy_bundle_path"]),
@@ -2245,6 +2284,15 @@ def execute_ntuple_only_generation(
     dry_run: bool,
 ) -> int:
     """生成仅含 ntuple 重跑节点的 DAG（从已有 MiniAOD 出发）。"""
+    if options.strict_vtx_smearing_check:
+        result = subprocess.run(
+            [sys.executable, os.path.join(BASE_DIR, "tools", "check_gensim_vtxsmeared_config.py")],
+            check=False,
+        )
+        if result.returncode != 0:
+            print("Error: GEN-SIM vertex smearing check failed.", file=sys.stderr)
+            return 1
+
     output_dir = os.path.abspath(output_dir)
     if not options.local_log_dir:
         options.local_log_dir = os.path.join(output_dir, "logs")
@@ -2370,6 +2418,15 @@ def execute_generation(
     options: WorkflowOptions,
     dry_run: bool,
 ) -> int:
+    if options.strict_vtx_smearing_check:
+        result = subprocess.run(
+            [sys.executable, os.path.join(BASE_DIR, "tools", "check_gensim_vtxsmeared_config.py")],
+            check=False,
+        )
+        if result.returncode != 0:
+            print("Error: GEN-SIM vertex smearing check failed.", file=sys.stderr)
+            return 1
+
     output_dir = os.path.abspath(output_dir)
     if not options.local_log_dir:
         options.local_log_dir = os.path.join(output_dir, "logs")
@@ -2704,6 +2761,10 @@ def execute_hepjob_delegate(args: argparse.Namespace) -> int:
             command.append("--disable-ntuple")
         if args.efficiency_ntuple:
             command.append("--efficiency-ntuple")
+        if args.shuffle_mixing:
+            command.append("--shuffle-mixing")
+        else:
+            command.append("--no-shuffle-mixing")
 
     if args.command == "generate":
         if args.cleanup:
@@ -2798,6 +2859,19 @@ def add_common_generation_arguments(parser: argparse.ArgumentParser) -> None:
         help="生成 multileppat 效率/acceptance 可用的 JJP full-GEN truth ntuple，并写出 ntuple manifest。",
     )
     parser.add_argument(
+        "--shuffle-mixing",
+        dest="shuffle_mixing",
+        action="store_true",
+        default=False,
+        help="启用确定性的多输入源 shuffle mixing。",
+    )
+    parser.add_argument(
+        "--no-shuffle-mixing",
+        dest="shuffle_mixing",
+        action="store_false",
+        help="禁用 shuffle mixing（默认顺序 mixing）。",
+    )
+    parser.add_argument(
         "--cleanup",
         dest="cleanup",
         action="store_true",
@@ -2859,6 +2933,16 @@ def add_common_generation_arguments(parser: argparse.ArgumentParser) -> None:
         "--local-output-base",
         default="",
         help="本地输出基础目录；hepthu 默认使用 ~/MC_Production_result。",
+    )
+    parser.add_argument(
+        "--local-condor",
+        action="store_true",
+        help="快捷方式：等价于 --machine-env local_condor。",
+    )
+    parser.add_argument(
+        "--strict-vtx-smearing-check",
+        action="store_true",
+        help="在生成 DAG 前运行 GEN-SIM vertex smearing 静态校验。",
     )
     parser.add_argument(
         "--maxjobs-lhe",
@@ -2951,6 +3035,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="本地输出基础目录；hepthu 默认使用 ~/MC_Production_result。",
     )
+    validate_parser.add_argument(
+        "--local-condor",
+        action="store_true",
+        help="快捷方式：等价于 --machine-env local_condor。",
+    )
 
     runtime_parser = subparsers.add_parser("prepare-runtime", help="生成 worker 运行所需的压缩包")
     runtime_parser.add_argument(
@@ -2977,6 +3066,11 @@ def build_parser() -> argparse.ArgumentParser:
             "预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball；"
             "默认查找 common/packages/cmssw15_tpsonia2mumu_runtime.tar.gz。"
         ),
+    )
+    runtime_parser.add_argument(
+        "--local-condor",
+        action="store_true",
+        help="快捷方式：等价于 --machine-env local_condor。",
     )
 
     generate_parser = subparsers.add_parser("generate", help="生成正式 DAG")
@@ -3125,6 +3219,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="本地输出基目录；会通过 LOCAL_OUTPUT_BASE 环境变量传递给 worker。",
     )
     ntuple_only_parser.add_argument(
+        "--local-condor",
+        action="store_true",
+        help="快捷方式：等价于 --machine-env local_condor。",
+    )
+    ntuple_only_parser.add_argument(
         "--proxy-path",
         default=detect_proxy_path(),
         help="X509 代理路径；默认自动探测。",
@@ -3144,6 +3243,11 @@ def build_parser() -> argparse.ArgumentParser:
     ntuple_only_parser.add_argument(
         "--cmssw15-runtime-tarball", default=None,
         help="预编译 CMSSW_15_0_15 TPS-Onia2MuMu runtime tarball。",
+    )
+    ntuple_only_parser.add_argument(
+        "--strict-vtx-smearing-check",
+        action="store_true",
+        help="在生成 DAG 前运行 GEN-SIM vertex smearing 静态校验。",
     )
     ntuple_only_parser.add_argument("--dry-run", action="store_true", help="只打印 DAG，不写文件。")
 
@@ -3198,7 +3302,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.command == "validate":
-        machine_env = resolve_machine_env(args.machine_env)
+        try:
+            machine_env = resolve_machine_env(requested_machine_env_name(args))
+        except ValueError as exc:
+            parser.error(str(exc))
         campaign_names = expand_campaign_selection(args.campaign) if args.campaign else None
         local_output_base = args.local_output_base or (machine_env.local_output_base if machine_env.uses_local_storage else "")
         return validate_environment(
@@ -3212,7 +3319,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     if args.command == "prepare-runtime":
-        machine_env = resolve_machine_env(args.machine_env)
+        try:
+            machine_env = resolve_machine_env(requested_machine_env_name(args))
+        except ValueError as exc:
+            parser.error(str(exc))
         return execute_prepare_runtime(
             output_dir=args.output_dir,
             proxy_path=args.proxy_path,
@@ -3242,7 +3352,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 1
 
     if args.command in {"generate", "generate-test"}:
-        machine_env = resolve_machine_env(args.machine_env)
+        try:
+            machine_env = resolve_machine_env(requested_machine_env_name(args))
+        except ValueError as exc:
+            parser.error(str(exc))
         campaign_names = expand_campaign_selection(args.campaign)
         if args.efficiency_ntuple:
             try:
@@ -3277,6 +3390,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             maxjobs_processing=args.maxjobs_processing,
             maxjobs_ntuple=args.maxjobs_ntuple,
             cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
+            shuffle_mixing=args.shuffle_mixing,
+            strict_vtx_smearing_check=args.strict_vtx_smearing_check,
         )
         return execute_generation(
             campaign_names=campaign_names,
@@ -3287,7 +3402,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     if args.command == "generate-ntuple-only":
-        machine_env = resolve_machine_env(args.machine_env)
+        try:
+            machine_env = resolve_machine_env(requested_machine_env_name(args))
+        except ValueError as exc:
+            parser.error(str(exc))
 
         # Resolve campaign names
         if args.campaign:
@@ -3341,6 +3459,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             maxjobs_processing=0,
             maxjobs_ntuple=args.maxjobs_ntuple,
             cmssw15_runtime_tarball=args.cmssw15_runtime_tarball,
+            shuffle_mixing=False,
+            strict_vtx_smearing_check=args.strict_vtx_smearing_check,
         )
         return execute_ntuple_only_generation(
             campaign_names=campaign_names,

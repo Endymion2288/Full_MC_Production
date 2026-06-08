@@ -14,6 +14,7 @@ ENABLE_NTUPLE="$9"
 EFFICIENCY_NTUPLE="${10:-false}"
 CLEANUP="${11:-true}"
 LOCAL_OUTPUT_BASE="${12:-}"
+SHUFFLE_MIXING="${13:-false}"
 
 export LOCAL_OUTPUT_BASE="${LOCAL_OUTPUT_BASE:-}"
 
@@ -61,7 +62,7 @@ export LD_LIBRARY_PATH="/usr/lib64:${LD_LIBRARY_PATH:-}"
 
 echo "Running processing chain..."
 cd runtime/processing
-if ! bash run_chain.sh --inputs "${INPUTS}" --modes "${MODES}" --analysis "${ANALYSIS}" --campaign "${CAMPAIGN}" --job-id "${JOB_ID}" --max-events "${MAX_EVENTS}" --enable-ntuple "${ENABLE_NTUPLE}" --efficiency-ntuple "${EFFICIENCY_NTUPLE}" --cleanup "${CLEANUP}"; then
+if ! bash run_chain.sh --inputs "${INPUTS}" --modes "${MODES}" --analysis "${ANALYSIS}" --campaign "${CAMPAIGN}" --job-id "${JOB_ID}" --max-events "${MAX_EVENTS}" --enable-ntuple "${ENABLE_NTUPLE}" --efficiency-ntuple "${EFFICIENCY_NTUPLE}" --shuffle-mixing "${SHUFFLE_MIXING}" --cleanup "${CLEANUP}"; then
     echo "ERROR: Processing chain failed" >&2
     exit 1
 fi

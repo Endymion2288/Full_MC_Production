@@ -1079,7 +1079,15 @@ run_mix() {
         run_logged "event_mixer_single" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[0]}"
     else
         msg_info "Mixing ${n_sources} sources..."
-        run_logged "event_mixer_multi" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[@]}"
+        if [[ "${SHUFFLE_MIXING}" == "true" ]]; then
+            local shuffle_seed=$((JOB_ID * 1000 + 1))
+            msg_info "Shuffle mixing enabled with seed base ${shuffle_seed}"
+            run_logged "event_mixer_shuffle" ./event_mixer_multisource \
+                "${MIXED_HEPMC}" "${HEPMC_FILES[@]}" \
+                --shuffle-sources --shuffle-seed-base "${shuffle_seed}"
+        else
+            run_logged "event_mixer_multi" ./event_mixer_multisource "${MIXED_HEPMC}" "${HEPMC_FILES[@]}"
+        fi
     fi
     
     if [[ ! -f "${MIXED_HEPMC}" ]]; then
@@ -1440,6 +1448,7 @@ Optional:
   --workdir DIR           Working directory (default: /srv/<campaign>_<job_id>)
   --enable-ntuple BOOL    是否执行 ntuple 步骤 (true|false)
   --efficiency-ntuple BOOL 是否生成效率/acceptance full-GEN truth ntuple (需要 --enable-ntuple true)
+  --shuffle-mixing BOOL   是否对多输入源启用确定性 shuffle mixing (true|false)
   --cleanup BOOL          是否清理中间文件 (true|false)
   --skip-to STEP          Skip to specified step (shower|mix|gensim|raw|reco|miniaod|ntuple)
   --stop-at STEP          Stop after specified step
@@ -1471,6 +1480,7 @@ WORKDIR=""
 CLEANUP="true"
 ENABLE_NTUPLE="true"
 EFFICIENCY_NTUPLE="false"
+SHUFFLE_MIXING="false"
 SKIP_TO=""
 STOP_AT=""
 MAX_EVENTS=-1
@@ -1509,6 +1519,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --efficiency-ntuple)
             EFFICIENCY_NTUPLE="$2"
+            shift 2
+            ;;
+        --shuffle-mixing)
+            SHUFFLE_MIXING="$2"
             shift 2
             ;;
         --cleanup)
@@ -1570,6 +1584,11 @@ if [[ "${EFFICIENCY_NTUPLE}" == "true" ]]; then
         msg_error "--efficiency-ntuple currently supports only JJP/JpsiJpsiPhi"
         exit 1
     fi
+fi
+
+if [[ "${SHUFFLE_MIXING}" != "true" ]] && [[ "${SHUFFLE_MIXING}" != "false" ]]; then
+    msg_error "--shuffle-mixing must be true or false"
+    exit 1
 fi
 
 if [[ "${CLEANUP}" != "true" ]] && [[ "${CLEANUP}" != "false" ]]; then

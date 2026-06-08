@@ -181,6 +181,7 @@ def generate_processing_job_script(
     max_events: int,
     enable_ntuple: bool,
     efficiency_ntuple: bool,
+    shuffle_mixing: bool,
     cleanup: bool,
     bundle_dir: str,
     proc_bundle_name: str,
@@ -192,6 +193,7 @@ def generate_processing_job_script(
 
     enable_ntuple_str = bool_str(enable_ntuple)
     efficiency_ntuple_str = bool_str(efficiency_ntuple)
+    shuffle_mixing_str = bool_str(shuffle_mixing)
     cleanup_str = bool_str(cleanup)
     work_dir = f"{bundle_dir}/proc_{campaign_name}_{job_index}"
     proxy_path = f"{work_dir}/credentials/x509_user_proxy"
@@ -205,6 +207,7 @@ def generate_processing_job_script(
         max_events=max_events,
         enable_ntuple_str=enable_ntuple_str,
         efficiency_ntuple_str=efficiency_ntuple_str,
+        shuffle_mixing_str=shuffle_mixing_str,
         cleanup_str=cleanup_str,
         bundle_dir=bundle_dir,
         proc_bundle_name=proc_bundle_name,
@@ -254,6 +257,7 @@ bash run_chain.sh \\
     --max-events {max_events} \\
     --enable-ntuple {enable_ntuple_str} \\
     --efficiency-ntuple {efficiency_ntuple_str} \\
+    --shuffle-mixing {shuffle_mixing_str} \\
     --cleanup {cleanup_str}
 EC=\$?
 rm -rf "\${{WORKDIR}}" 2>/dev/null || true
@@ -585,6 +589,7 @@ class HepJobBuilder:
         max_events: int,
         enable_ntuple: bool,
         efficiency_ntuple: bool,
+        shuffle_mixing: bool,
         cleanup: bool,
         test_mode: bool,
         scan_existing: bool,
@@ -599,6 +604,7 @@ class HepJobBuilder:
         self.max_events = max_events
         self.enable_ntuple = enable_ntuple
         self.efficiency_ntuple = efficiency_ntuple
+        self.shuffle_mixing = shuffle_mixing
         self.cleanup = cleanup
         self.test_mode = test_mode
         self.scan_existing = scan_existing
@@ -711,7 +717,7 @@ class HepJobBuilder:
                     campaign_name, job_index,
                     inputs, modes, campaign.analysis_type,
                     campaign.n_sources, self.max_events,
-                    self.enable_ntuple, self.efficiency_ntuple, self.cleanup,
+                    self.enable_ntuple, self.efficiency_ntuple, self.shuffle_mixing, self.cleanup,
                     self.bundle_dir, proc_bundle_name, proxy_bundle_name,
                 )
                 write_job_script(script_path, content)
@@ -759,6 +765,7 @@ class HepJobBuilder:
             ("max_events", self.max_events),
             ("enable_ntuple", self.enable_ntuple),
             ("efficiency_ntuple", self.efficiency_ntuple),
+            ("shuffle_mixing", self.shuffle_mixing),
             ("test_mode", self.test_mode),
             (
                 "ntuple_manifest",
@@ -822,6 +829,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="生成 multileppat 效率/acceptance 可用的 JJP full-GEN truth ntuple，并写出 ntuple manifest。",
     )
     generate_parser.add_argument(
+        "--shuffle-mixing", dest="shuffle_mixing", action="store_true", default=False,
+        help="启用确定性的多输入源 shuffle mixing。",
+    )
+    generate_parser.add_argument(
+        "--no-shuffle-mixing", dest="shuffle_mixing", action="store_false",
+        help="禁用 shuffle mixing（默认顺序 mixing）。",
+    )
+    generate_parser.add_argument(
         "--cleanup", dest="cleanup", action="store_true", default=True,
         help="作业结束后清理中间文件。",
     )
@@ -873,6 +888,14 @@ def build_parser() -> argparse.ArgumentParser:
     test_parser.add_argument(
         "--efficiency-ntuple", action="store_true",
         help="生成 multileppat 效率/acceptance 可用的 JJP full-GEN truth ntuple，并写出 ntuple manifest。",
+    )
+    test_parser.add_argument(
+        "--shuffle-mixing", dest="shuffle_mixing", action="store_true", default=False,
+        help="启用确定性的多输入源 shuffle mixing。",
+    )
+    test_parser.add_argument(
+        "--no-shuffle-mixing", dest="shuffle_mixing", action="store_false",
+        help="禁用 shuffle mixing（默认顺序 mixing）。",
     )
     test_parser.add_argument("--proxy-path", default=detect_proxy_path(), help="代理路径。")
     test_parser.add_argument("--group", default="cms", help="HepJob 组名。")
@@ -946,6 +969,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         max_events = args.max_events
         enable_ntuple = args.enable_ntuple if hasattr(args, "enable_ntuple") else False
         efficiency_ntuple = args.efficiency_ntuple if hasattr(args, "efficiency_ntuple") else False
+        shuffle_mixing = args.shuffle_mixing if hasattr(args, "shuffle_mixing") else False
         if efficiency_ntuple:
             try:
                 validate_efficiency_campaigns(campaign_names)
@@ -966,6 +990,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"每 job 事件数: {max_events}")
         print(f"Ntuple: {enable_ntuple}")
         print(f"Efficiency ntuple: {efficiency_ntuple}")
+        print(f"Shuffle mixing: {shuffle_mixing}")
         print(f"测试模式: {test_mode}")
         print(f"输出目录: {output_dir}")
         print()
@@ -976,6 +1001,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             max_events=max_events,
             enable_ntuple=enable_ntuple,
             efficiency_ntuple=efficiency_ntuple,
+            shuffle_mixing=shuffle_mixing,
             cleanup=cleanup,
             test_mode=test_mode,
             scan_existing=scan_existing,
