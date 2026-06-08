@@ -36,6 +36,7 @@ ivars.parseArguments()
 ANALYSIS_MODE = 'JpsiJpsiPhi'
 DO_MONTE_CARLO_TREE = True
 REQUIRE_ACCEPTED_CANDIDATES_FOR_MONTE_CARLO_TREE = False
+KEEP_ALL_SINGLE_OBJECT_CANDS_IN_MC = True
 AddCaloMuon = False
 runOnMC = ivars.runOnMC
 HIFormat = False
@@ -145,6 +146,7 @@ process.mkcands = cms.EDAnalyzer('MultiLepPAT',
         DoJPsiMassConstraint = cms.untracked.bool(True),
         DoMonteCarloTree = cms.untracked.bool(DO_MONTE_CARLO_TREE),
         RequireAcceptedCandidatesForMonteCarloTree = cms.untracked.bool(REQUIRE_ACCEPTED_CANDIDATES_FOR_MONTE_CARLO_TREE),
+        KeepAllSingleObjectCandsInMC = cms.untracked.bool(KEEP_ALL_SINGLE_OBJECT_CANDS_IN_MC),
         MonteCarloParticleId = cms.untracked.int32(20443),
         trackQualities = cms.untracked.vstring('loose','tight','highPurity'),
         MinNumMuPixHits = cms.untracked.int32(1),
