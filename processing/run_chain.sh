@@ -556,6 +556,42 @@ ${cmd_text}
     run_logged "${label}" "$@"
 }
 
+validate_root_file() {
+    local label="$1"
+    local file_path="$2"
+
+    if [[ ! -s "${file_path}" ]]; then
+        msg_error "${label} output missing or empty: ${file_path}"
+        return 1
+    fi
+
+    local checker="${WORKDIR}/validate_root_file.py"
+    cat > "${checker}" <<'PYCHECK'
+import sys
+
+import ROOT
+
+path = sys.argv[1]
+root_file = ROOT.TFile.Open(path)
+if not root_file:
+    print(f"ROOT validation failed: could not open {path}", file=sys.stderr)
+    sys.exit(2)
+if root_file.IsZombie():
+    print(f"ROOT validation failed: zombie file {path}", file=sys.stderr)
+    sys.exit(3)
+if root_file.TestBit(ROOT.TFile.kRecovered):
+    print(f"ROOT validation failed: recovered/incompletely closed file {path}", file=sys.stderr)
+    sys.exit(4)
+if root_file.GetNkeys() <= 0:
+    print(f"ROOT validation failed: no keys in {path}", file=sys.stderr)
+    sys.exit(5)
+print(f"ROOT validation OK: {path} keys={root_file.GetNkeys()}")
+sys.exit(0)
+PYCHECK
+
+    run_cmssw12_command "validate_root_${label}" python3 "${checker}" "${file_path}"
+}
+
 # Run command inside el9 container using apptainer
 run_in_el9_container() {
     local script_content="$1"
@@ -686,6 +722,46 @@ for index, url in enumerate(urls):
 
 output.write_text("\n".join(local_files) + "\n")
 print(f"cached {len(local_files)} premix files to {cache_dir}", file=sys.stderr)
+PYHELPER
+    echo "${output_list}"
+}
+
+prepare_local_pool_premix_filelist() {
+    local pool_dir="${PREMIX_LOCAL_POOL_DIR:-}"
+    local output_list="${WORKDIR}/premix_input_localpool.txt"
+    local max_files="${PREMIX_LOCAL_POOL_FILES:-0}"
+
+    if [[ -z "${pool_dir}" ]]; then
+        msg_error "PREMIX_LOCAL_POOL_DIR must point to a directory of local premix ROOT files"
+        return 1
+    fi
+    if [[ ! -d "${pool_dir}" ]]; then
+        msg_error "Premix local pool directory not found: ${pool_dir}"
+        return 1
+    fi
+    if ! [[ "${max_files}" =~ ^[0-9]+$ ]]; then
+        msg_error "PREMIX_LOCAL_POOL_FILES must be a non-negative integer"
+        return 1
+    fi
+
+    python3 - "${pool_dir}" "${output_list}" "${max_files}" <<'PYHELPER'
+import sys
+from pathlib import Path
+
+pool_dir = Path(sys.argv[1])
+output = Path(sys.argv[2])
+max_files = int(sys.argv[3])
+
+files = sorted(
+    path for path in pool_dir.glob("*.root")
+    if path.is_file() and path.stat().st_size > 0
+)
+if max_files > 0:
+    files = files[:max_files]
+if not files:
+    raise SystemExit(f"no non-empty ROOT files found in {pool_dir}")
+output.write_text("".join(f"file:{path}\n" for path in files))
+print(f"wrote {len(files)} local premix files to {output}", file=sys.stderr)
 PYHELPER
     echo "${output_list}"
 }
